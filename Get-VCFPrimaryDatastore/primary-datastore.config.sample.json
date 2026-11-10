@@ -1,6 +1,0 @@
-{
-  "_comment": "Copy to primary-datastore.config.json and adjust. Never put passwords here: use SddcUser (the script prompts) or SddcCredentialFile (Get-Credential | Export-Clixml <file>).",
-  "SddcManagerFqdn": "sddc01.corp.local",
-  "SddcUser": "administrator@vsphere.local",
-  "SkipCertificateCheck": false
-}

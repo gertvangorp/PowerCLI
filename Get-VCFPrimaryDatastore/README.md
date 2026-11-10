@@ -14,31 +14,32 @@ Background: [Why the principal datastore matters in VCF (especially with FC and 
 
 | Parameter | Required | Description |
 |---|---|---|
-| `-SddcManagerFqdn` | Yes, or in the config file | FQDN of SDDC Manager |
+| `-SddcManager` | Yes, or in the config file | FQDN of SDDC Manager. The old name `-SddcManagerFqdn` still works |
 | `-Credential` | No | A `PSCredential`. If you leave it out, the script asks with `Get-Credential` |
 | `-SkipCertificateCheck` | No | Skips TLS certificate validation. **Lab use only**, for self-signed certificates |
-| `-ConfigFile` | No | JSON config file, see [primary-datastore.config.sample.json](primary-datastore.config.sample.json) |
+| `-Environment` | No | Environment config name: reads `config\<name>.config.json` |
+| `-ConfigFile` | No | Path to an environment config file |
 
 ## Usage
 
 ```powershell
 # Asks for credentials, validates the certificate
-.\Get-VCFPrimaryDatastore.ps1 -SddcManagerFqdn sddc-manager.yourdomain.local
+.\Get-VCFPrimaryDatastore.ps1 -SddcManager sddc-manager.yourdomain.local
 
 # Reuse a credential
 $cred = Get-Credential
-.\Get-VCFPrimaryDatastore.ps1 -SddcManagerFqdn sddc-manager.yourdomain.local -Credential $cred
+.\Get-VCFPrimaryDatastore.ps1 -SddcManager sddc-manager.yourdomain.local -Credential $cred
 
 # Lab with a self-signed certificate
-.\Get-VCFPrimaryDatastore.ps1 -SddcManagerFqdn sddc-manager.lab.local -SkipCertificateCheck
+.\Get-VCFPrimaryDatastore.ps1 -SddcManager sddc-manager.lab.local -SkipCertificateCheck
 
 # With a config file
-.\Get-VCFPrimaryDatastore.ps1 -ConfigFile .\primary-datastore.config.json
+.\Get-VCFPrimaryDatastore.ps1 -Environment lab1
 ```
 
 ## Config file
 
-Copy [primary-datastore.config.sample.json](primary-datastore.config.sample.json) to `primary-datastore.config.json` (that name is in `.gitignore`). Values on the command line win over the file. The file never holds a password: `SddcUser` makes the script ask for the password, `SddcCredentialFile` points to a file made with `Get-Credential | Export-Clixml <file>` (encrypted for your Windows account). A key with `password`, `secret` or `token` in its name stops the script.
+This script uses the shared **environment config**: one JSON file per environment (lab, customer, ...) for all scripts in this repository. See [config/README.md](../config/README.md). Run with `-Environment lab1` (reads `config\lab1.config.json`) or `-ConfigFile <path>`. The script reads the top-level keys, then `Common`, then its own section **`PrimaryDatastore`**. Values on the command line win over the file.
 
 ## Example output
 

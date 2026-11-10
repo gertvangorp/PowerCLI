@@ -23,7 +23,8 @@ The script only reads. It changes nothing.
 | `-Cluster` | No | One or more cluster names. Leave out for all hosts in vCenter |
 | `-CsvPath` | No | Also export to CSV. `{date}` becomes `yyyyMMdd-HHmm` |
 | `-Credential` | No | vCenter account. Config: `VcUser` / `VcCredentialFile` |
-| `-ConfigFile` | No | JSON config file, see below |
+| `-Environment` | No | Environment config name: reads `config\<name>.config.json` |
+| `-ConfigFile` | No | Path to an environment config file |
 | `-UseSddcCredentials` | No | Read the password from the SDDC Manager vault |
 | `-SddcManager` | With `-UseSddcCredentials` | SDDC Manager FQDN |
 | `-SddcCredential` | No | SDDC Manager account (ADMIN role). Config: `SddcUser` / `SddcCredentialFile` |
@@ -35,7 +36,7 @@ The script only reads. It changes nothing.
 .\Get-TpmRecoveryKey.ps1 -VCenter vc01.corp.local -Cluster CL-MGMT-01 | Format-Table
 
 # VCF: vCenter SSO account from the SDDC Manager vault
-.\Get-TpmRecoveryKey.ps1 -ConfigFile .\tpm.config.json -UseSddcCredentials
+.\Get-TpmRecoveryKey.ps1 -Environment lab1 -UseSddcCredentials
 ```
 
 ## Credentials
@@ -43,13 +44,13 @@ The script only reads. It changes nothing.
 The script never stores or prints a password. It takes the account from the first of these that is set:
 
 1. `-Credential` on the command line.
-2. The config file: `VcUser` makes the script ask for that user's password, `VcCredentialFile` points to a file made with `Get-Credential | Export-Clixml <file>` (encrypted for your Windows account, on that machine).
+2. The environment config: `VcUser` makes the script ask for that user's password, `VcCredentialFile` points to a file made with `Get-Credential | Export-Clixml <file>` (encrypted for your Windows account, on that machine).
 3. `-UseSddcCredentials` with `-SddcManager`: the password is read from the SDDC Manager vault (`GET /v1/credentials`, the API counterpart of `lookup_passwords`). Only the SDDC Manager login needs a password; that account needs the SDDC Manager **ADMIN** role. With the vault, the script uses the vCenter SSO account (credential type `SSO`).
 4. Otherwise `Get-Credential` asks.
 
 ## Config file
 
-Copy [tpm.config.sample.json](tpm.config.sample.json) to `tpm.config.json` (all `*.config.json` files are in `.gitignore`) and run with `-ConfigFile .\tpm.config.json`. Values on the command line win over the file. A key with `password`, `secret` or `token` in its name stops the script, so a password can't end up in the file by accident. Keys that start with `_` are comments.
+This script uses the shared **environment config**: one JSON file per environment (lab, customer, ...) for all scripts in this repository. See [config/README.md](../config/README.md). Run with `-Environment lab1` (reads `config\lab1.config.json`) or `-ConfigFile <path>`. The script reads the top-level keys, then `Common`, then its own section **`TpmRecoveryKey`**. Values on the command line win over the file.
 
 ## Output
 

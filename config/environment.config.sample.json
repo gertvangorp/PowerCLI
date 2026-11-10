@@ -1,0 +1,28 @@
+{
+  "_comment": "One file per environment (lab, customer, ...), shared by all scripts. Copy to config\\<name>.config.json (for example lab1.config.json) and run a script with -Environment <name>, or use -ConfigFile <path>. Every script reads the top-level keys, then Common, then its own section; a later one wins. Never put passwords here: use <X>User (the script prompts) or <X>CredentialFile (Get-Credential | Export-Clixml <file>).",
+  "Environment": "lab1",
+  "Common": {
+    "SddcManager": "sddc01.lab1.local",
+    "VCenter": "vc01.lab1.local",
+    "SddcUser": "administrator@vsphere.local",
+    "_SddcCredentialFile": "%USERPROFILE%\\creds\\lab1-sddc.xml",
+    "VcUser": "administrator@vsphere.local",
+    "_VcCredentialFile": "%USERPROFILE%\\creds\\lab1-vc.xml",
+    "EsxiUser": "root",
+    "UseSddcCredentials": false,
+    "SkipCertificateCheck": true
+  },
+  "PrimaryDatastore": {},
+  "LunMultipathReport": {
+    "VMHost": ["esx01.lab1.local"],
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-lun-report-{date}.csv"
+  },
+  "TpmRecoveryKey": {
+    "Cluster": ["cl01"],
+    "CsvPath": ""
+  },
+  "EsxiNtpServer": {
+    "VMHost": ["esx01.lab1.local", "esx02.lab1.local"],
+    "NtpServer": ["0.be.pool.ntp.org", "1.be.pool.ntp.org"]
+  }
+}

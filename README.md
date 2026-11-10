@@ -1,6 +1,6 @@
 # PowerCLI
 
-PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). Each script has its own folder with a README and a sample config file.
+PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). Each script has its own folder with a README. All scripts share one [environment config](config/) per lab or customer.
 
 | Folder | What it does | Changes anything? |
 |---|---|---|
@@ -12,11 +12,12 @@ PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). E
 ## Common conventions
 
 - **PowerShell 7 or Windows PowerShell 5.1.** The PowerCLI scripts need `Install-Module VCF.PowerCLI -Scope CurrentUser`.
-- **Config file.** Every script takes an optional `-ConfigFile` (JSON). Copy the `*.config.sample.json` from its folder to `*.config.json`; real config files are in `.gitignore`. The command line wins over the file.
+- **One config file per environment.** All scripts share one JSON file per environment (lab, customer, ...): `-Environment lab1` reads `config\lab1.config.json`, `-ConfigFile <path>` reads any file. Start from [config/environment.config.sample.json](config/environment.config.sample.json); see [config/README.md](config/README.md). Real config files are in `.gitignore`. The command line wins over the file.
 - **No passwords in files.** A config key with `password`, `secret` or `token` in its name stops the script. Use `<X>User` (the script asks) or `<X>CredentialFile` (`Get-Credential | Export-Clixml <file>`).
 - **VCF credentials.** The vCenter and ESXi scripts accept `-UseSddcCredentials`: they then read the password from the SDDC Manager vault, so only the SDDC Manager login needs a password.
 - **Certificates are validated.** `-SkipCertificateCheck` is for labs with self-signed certificates only.
-- **Help.** Every script has comment-based help: `Get-Help .\Get-TpmRecoveryKey.ps1 -Full`.
+- **Standard header.** Every script starts with comment-based help: synopsis, description, parameters, examples, and `.NOTES` with name, version, date, author, requirements and version history. Read it with `Get-Help .\Get-TpmRecoveryKey\Get-TpmRecoveryKey.ps1 -Full`. The script also prints its version when it starts.
+- **Shared code.** The config loader and the SDDC Manager vault functions are copied into every script (so each script still works as a single download) and must stay identical: the lint workflow fails when they differ.
 
 ## Moved scripts
 

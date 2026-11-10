@@ -25,6 +25,30 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      - name: Shared code blocks are identical
+        shell: pwsh
+        run: |
+          # The config loader and the vault functions are copied into every script; they must not drift apart.
+          $failed = $false
+          foreach ($marker in '#region Environment config file', '#region SDDC Manager vault functions') {
+            $blocks = @{}
+            foreach ($f in Get-ChildItem -Recurse -Filter *.ps1) {
+              $text = (Get-Content $f.FullName -Raw) -replace "`r`n", "`n"
+              $i = $text.IndexOf($marker)
+              if ($i -lt 0) { continue }
+              $j = $text.IndexOf('#endregion', $i)
+              $blocks[$f.FullName] = $text.Substring($i, $j - $i)
+            }
+            $distinct = @($blocks.Values | Sort-Object -Unique)
+            Write-Host "$marker : $($blocks.Count) scripts, $($distinct.Count) version(s)"
+            if ($distinct.Count -gt 1) {
+              $failed = $true
+              $ref = $blocks.Values | Select-Object -First 1
+              foreach ($k in $blocks.Keys) { if ($blocks[$k] -ne $ref) { Write-Host "::error file=$k::'$marker' differs from the other scripts" } }
+            }
+          }
+          if ($failed) { exit 1 }
+
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
