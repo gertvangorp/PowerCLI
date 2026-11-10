@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to tpm.config.json and adjust. Leave Cluster empty for all hosts. Never put passwords here: use VcUser (the script prompts) or VcCredentialFile (Get-Credential | Export-Clixml <file>). With UseSddcCredentials the vCenter SSO account comes from the SDDC Manager vault.",
+  "VCenter": "vc01.corp.local",
+  "Cluster": ["CL-MGMT-01"],
+  "CsvPath": "",
+  "VcUser": "administrator@vsphere.local",
+  "UseSddcCredentials": false,
+  "SddcManager": "sddc01.corp.local",
+  "SddcUser": "administrator@vsphere.local",
+  "SkipCertificateCheck": false
+}

@@ -1,66 +1,32 @@
 # PowerCLI
 
-PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF).
+PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). Each script has its own folder with a README and a sample config file.
 
-| Script | Status |
-|---|---|
-| [Get-VCFPrimaryDatastore.ps1](Get-VCFPrimaryDatastore.ps1) | Documented below |
-| Configure-NTP-Directly-ESXhost.ps1 | Pending review |
-| Report-LUN-Info.ps1 | Pending review |
-| Report-TPM-RecoveryKey.ps1 | Pending review |
-
-## Get-VCFPrimaryDatastore.ps1
-
-Lists the primary (principal) datastore of every cluster in VCF 9.x, using the SDDC Manager API. Run it before you retire or delete a principal LUN or NFS export: SDDC Manager keeps referencing that datastore, and Day-N workflows such as adding hosts fail if it disappears.
-
-Background: [Why the principal datastore matters in VCF (especially with FC and NFS)](https://www.v-consult.be/vcf-principal-datastore-fc-nfs/)
-
-### Requirements
-
-- Windows PowerShell 5.1 or PowerShell 7+ (no PowerCLI modules needed)
-- Network access to SDDC Manager on HTTPS (443)
-- An SDDC Manager account that can read clusters and domains, for example `administrator@vsphere.local`
-
-### Parameters
-
-| Parameter | Required | Description |
+| Folder | What it does | Changes anything? |
 |---|---|---|
-| `-SddcManagerFqdn` | Yes | FQDN of SDDC Manager |
-| `-Credential` | No | A `PSCredential`. If you leave it out, the script asks with `Get-Credential` |
-| `-SkipCertificateCheck` | No | Skips TLS certificate validation. **Lab use only**, for self-signed certificates |
+| [Get-VCFPrimaryDatastore](Get-VCFPrimaryDatastore/) | VCF 9.x: lists the primary (principal) datastore of every cluster through the SDDC Manager API. | No |
+| [Get-LunMultipathReport](Get-LunMultipathReport/) | Lists every LUN of one or more ESXi hosts with multipath policy, PSP, SATP and working paths. | No |
+| [Get-TpmRecoveryKey](Get-TpmRecoveryKey/) | Reports the TPM recovery key of every ESXi host in a cluster. | No |
+| [Set-EsxiNtpServer](Set-EsxiNtpServer/) | Sets the NTP servers and the ntpd service directly on ESXi hosts. Supports `-WhatIf`. | **Yes** |
 
-### Usage
+## Common conventions
 
-```powershell
-# Asks for credentials, validates the certificate
-.\Get-VCFPrimaryDatastore.ps1 -SddcManagerFqdn sddc-manager.yourdomain.local
+- **PowerShell 7 or Windows PowerShell 5.1.** The PowerCLI scripts need `Install-Module VCF.PowerCLI -Scope CurrentUser`.
+- **Config file.** Every script takes an optional `-ConfigFile` (JSON). Copy the `*.config.sample.json` from its folder to `*.config.json`; real config files are in `.gitignore`. The command line wins over the file.
+- **No passwords in files.** A config key with `password`, `secret` or `token` in its name stops the script. Use `<X>User` (the script asks) or `<X>CredentialFile` (`Get-Credential | Export-Clixml <file>`).
+- **VCF credentials.** The vCenter and ESXi scripts accept `-UseSddcCredentials`: they then read the password from the SDDC Manager vault, so only the SDDC Manager login needs a password.
+- **Certificates are validated.** `-SkipCertificateCheck` is for labs with self-signed certificates only.
+- **Help.** Every script has comment-based help: `Get-Help .\Get-TpmRecoveryKey.ps1 -Full`.
 
-# Reuse a credential
-$cred = Get-Credential
-.\Get-VCFPrimaryDatastore.ps1 -SddcManagerFqdn sddc-manager.yourdomain.local -Credential $cred
+## Moved scripts
 
-# Lab with a self-signed certificate
-.\Get-VCFPrimaryDatastore.ps1 -SddcManagerFqdn sddc-manager.lab.local -SkipCertificateCheck
-```
+The scripts used to be in the root of this repository and were renamed to PowerShell verb-noun names:
 
-### Example output
+| Old name | New location |
+|---|---|
+| `Get-VCFPrimaryDatastore.ps1` | [Get-VCFPrimaryDatastore/Get-VCFPrimaryDatastore.ps1](Get-VCFPrimaryDatastore/Get-VCFPrimaryDatastore.ps1) |
+| `Configure-NTP-Directly-ESXhost.ps1` | [Set-EsxiNtpServer/Set-EsxiNtpServer.ps1](Set-EsxiNtpServer/Set-EsxiNtpServer.ps1) |
+| `Report-LUN-Info.ps1` | [Get-LunMultipathReport/Get-LunMultipathReport.ps1](Get-LunMultipathReport/Get-LunMultipathReport.ps1) |
+| `Report-TPM-RecoveryKey.ps1` | [Get-TpmRecoveryKey/Get-TpmRecoveryKey.ps1](Get-TpmRecoveryKey/Get-TpmRecoveryKey.ps1) |
 
-Names are anonymised.
-
-```
-Domain Name  Cluster Name Primary Datastore Name Primary Datastore Type
------------  ------------ ---------------------- ----------------------
-wld-dr       CL-DR-01     ds-db-fc-01            FC
-wld-prod     CL-APP-01    ds-app-fc-01           FC
-wld-prod     CL-DB-01     ds-db-fc-01            FC
-wld-prod     CL-MGMT-01   ds-mgmt-fc-01          FC
-```
-
-### How it works
-
-1. Requests an API token with `POST /v1/tokens`.
-2. Reads all clusters with `GET /v1/clusters` (`primaryDatastoreName`, `primaryDatastoreType`, `domain.id`).
-3. Reads all domains with `GET /v1/domains`, because `/v1/clusters` only returns the domain ID.
-4. Prints one line per cluster, sorted by domain and cluster name.
-
-The script only reads. It changes nothing in SDDC Manager or vCenter.
+`Get-VCFPrimaryDatastore.ps1` in the root is only a pointer to the new location, so older links keep working.

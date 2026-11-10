@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to ntp.config.json and adjust. Never put passwords here: use EsxiUser (the script prompts) or EsxiCredentialFile (Get-Credential | Export-Clixml <file>). With UseSddcCredentials the root password of each host comes from the SDDC Manager vault.",
+  "VMHost": ["esx01.corp.local", "esx02.corp.local", "esx03.corp.local", "esx04.corp.local"],
+  "NtpServer": ["0.be.pool.ntp.org", "1.be.pool.ntp.org", "2.be.pool.ntp.org"],
+  "EsxiUser": "root",
+  "UseSddcCredentials": false,
+  "SddcManager": "sddc01.corp.local",
+  "SddcUser": "administrator@vsphere.local",
+  "SkipCertificateCheck": false
+}

@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to lun-report.config.json and adjust. Never put passwords here: use VcUser (the script prompts) or VcCredentialFile (Get-Credential | Export-Clixml <file>). With UseSddcCredentials the vCenter SSO account comes from the SDDC Manager vault.",
+  "VCenter": "vc01.corp.local",
+  "VMHost": ["esx01.corp.local", "esx02.corp.local"],
+  "CsvPath": "C:\\Reports\\lun-report-{date}.csv",
+  "VcUser": "administrator@vsphere.local",
+  "UseSddcCredentials": false,
+  "SddcManager": "sddc01.corp.local",
+  "SddcUser": "administrator@vsphere.local",
+  "SkipCertificateCheck": false
+}
