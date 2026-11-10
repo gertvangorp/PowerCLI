@@ -3,7 +3,7 @@
     VCF 9.x: list the primary (principal) datastore of every cluster via the SDDC Manager API.
 
 .DESCRIPTION
-    Requests an API token from SDDC Manager, calls GET /v1/clusters and shows, per cluster,
+    Requests an API token from SDDC Manager, calls GET /v1/clusters and /v1/domains and shows, per cluster,
     the workload domain name and the primary datastore name and type.
 
     Credentials are asked at runtime with Get-Credential (or passed with -Credential).
