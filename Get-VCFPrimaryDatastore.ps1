@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Requests an API token from SDDC Manager, calls GET /v1/clusters and shows, per cluster,
-    the primary datastore name and type and the domain ID.
+    the primary datastore name, type and MoRef, and the workload domain name and ID.
 
     Credentials are asked at runtime with Get-Credential (or passed with -Credential).
     Certificate validation is ON by default. Use -SkipCertificateCheck only in a lab
@@ -80,6 +80,8 @@ $clusterData.elements | ForEach-Object {
         "Cluster Name"           = $_.name
         "Primary Datastore Name" = $_.primaryDatastoreName
         "Primary Datastore Type" = $_.primaryDatastoreType
-        "Domain ID"              = $_.domainId
+        "Datastore MoRef"        = $_.primaryDatastoreNativeId
+        "Domain Name"            = $_.domain.name
+        "Domain ID"              = $_.domain.id
     }
 } | Format-Table -AutoSize
