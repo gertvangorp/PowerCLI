@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Requests an API token from SDDC Manager, calls GET /v1/clusters and shows, per cluster,
-    the primary datastore name, type and native ID, and the workload domain name and ID.
+    the workload domain name and the primary datastore name and type.
 
     Credentials are asked at runtime with Get-Credential (or passed with -Credential).
     Certificate validation is ON by default. Use -SkipCertificateCheck only in a lab
@@ -74,14 +74,18 @@ if ($isCore -and $SkipCertificateCheck) { $clusterParams["SkipCertificateCheck"]
 
 $clusterData = Invoke-RestMethod @clusterParams
 
-# 4. Output primary datastore per cluster
+# 4. Query domains: /v1/clusters only returns the domain ID, so look up the names
+$domainParams = $clusterParams.Clone()
+$domainParams["Uri"] = "https://$SddcManagerFqdn/v1/domains"
+$domainNames = @{}
+(Invoke-RestMethod @domainParams).elements | ForEach-Object { $domainNames[$_.id] = $_.name }
+
+# 5. Output primary datastore per cluster
 $clusterData.elements | ForEach-Object {
     [PSCustomObject]@{
+        "Domain Name"            = $domainNames[$_.domain.id]
         "Cluster Name"           = $_.name
         "Primary Datastore Name" = $_.primaryDatastoreName
         "Primary Datastore Type" = $_.primaryDatastoreType
-        "Datastore Native ID"    = $_.primaryDatastoreNativeId
-        "Domain Name"            = $_.domain.name
-        "Domain ID"              = $_.domain.id
     }
-} | Format-Table -AutoSize
+} | Sort-Object "Domain Name", "Cluster Name" | Format-Table -AutoSize
