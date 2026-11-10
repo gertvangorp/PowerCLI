@@ -1,0 +1,59 @@
+name: PowerShell lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every script
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($f in Get-ChildItem -Recurse -Filter *.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            foreach ($e in $errors) { Write-Host "::error file=$($f.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Shared code blocks are identical
+        shell: pwsh
+        run: |
+          # The config loader and the vault functions are copied into every script; they must not drift apart.
+          $failed = $false
+          foreach ($marker in '#region Environment config file', '#region SDDC Manager vault functions') {
+            $blocks = @{}
+            foreach ($f in Get-ChildItem -Recurse -Filter *.ps1) {
+              $text = (Get-Content $f.FullName -Raw) -replace "`r`n", "`n"
+              $i = $text.IndexOf($marker)
+              if ($i -lt 0) { continue }
+              $j = $text.IndexOf('#endregion', $i)
+              $blocks[$f.FullName] = $text.Substring($i, $j - $i)
+            }
+            $distinct = @($blocks.Values | Sort-Object -Unique)
+            Write-Host "$marker : $($blocks.Count) scripts, $($distinct.Count) version(s)"
+            if ($distinct.Count -gt 1) {
+              $failed = $true
+              $ref = $blocks.Values | Select-Object -First 1
+              foreach ($k in $blocks.Keys) { if ($blocks[$k] -ne $ref) { Write-Host "::error file=$k::'$marker' differs from the other scripts" } }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          # Write-Host is used on purpose for console progress; the results go to the pipeline.
+          $r = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error, Warning -ExcludeRule PSAvoidUsingWriteHost
+          $r | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize -Wrap
+          if ($r | Where-Object Severity -eq 'Error') { exit 1 }

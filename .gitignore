@@ -1,0 +1,6 @@
+# Real environment configs and stored credentials (keep only the *.sample.json files in git)
+*.config.json
+*.cred.xml
+creds/
+# Reports (the TPM report contains recovery keys)
+*.csv
