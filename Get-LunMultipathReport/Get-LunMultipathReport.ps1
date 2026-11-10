@@ -3,7 +3,9 @@
     Reports every LUN of one or more ESXi hosts with its multipath policy, NMP details and working paths.
 
 .DESCRIPTION
-    Connects to vCenter and, per host, combines Get-ScsiLun with "esxcli storage nmp device list":
+    Connects to vCenter and, per host, combines Get-ScsiLun with esxcli (storage core device/path list,
+    storage nmp device list and storage hpp device list). Devices claimed by NMP (typically SAN LUNs) and
+    by HPP (local NVMe/SAS/SATA by default since ESXi 7) are both reported, with MultipathPlugin showing which:
     display name, canonical name, multipath policy, path selection policy (and its config), storage
     array type (SATP), working paths and whether the device is local, USB or the boot device.
 
@@ -56,7 +58,7 @@
     .\Get-LunMultipathReport.ps1 -ConfigFile .\lun-report.config.json
 
 .NOTES
-    Version: 2.0 (2026-11-10)
+    Version: 2.0.1 (2026-11-10)
     Requires PowerShell 7 or Windows PowerShell 5.1 and VCF.PowerCLI (or VMware.PowerCLI).
 #>
 [CmdletBinding()]
@@ -166,13 +168,22 @@ try {
     foreach ($esx in $esxHosts) {
         Write-Host "Reading LUNs of $($esx.Name) ..." -ForegroundColor Cyan
         try {
-            # One esxcli call per host (not per LUN), indexed by device name.
+            # esxcli once per host (not per LUN), indexed by device name.
             $esxcli = Get-EsxCli -VMHost $esx -Server $vi -V2
-            $nmp = @{}
-            foreach ($d in $esxcli.storage.nmp.device.list.Invoke()) { $nmp[$d.Device] = $d }
+            $core = @{}; foreach ($c in $esxcli.storage.core.device.list.Invoke()) { $core[$c.Device] = $c }
+            $nmp = @{}; foreach ($n in $esxcli.storage.nmp.device.list.Invoke()) { $nmp[$n.Device] = $n }
+            # HPP (High-Performance Plug-in) claims local NVMe/SAS/SATA by default; NMP does not list those devices.
+            $hpp = @{}; try { foreach ($h in $esxcli.storage.hpp.device.list.Invoke()) { $hpp[$h.Device] = $h } } catch { Write-Verbose "No HPP on $($esx.Name): $($_.Exception.Message)" }
+            $paths = @{}
+            foreach ($pa in $esxcli.storage.core.path.list.Invoke()) {
+                if (-not $paths.ContainsKey($pa.Device)) { $paths[$pa.Device] = [System.Collections.Generic.List[object]]::new() }
+                $paths[$pa.Device].Add($pa)
+            }
 
             foreach ($lun in Get-ScsiLun -VmHost $esx -Server $vi) {
-                $d = $nmp[$lun.CanonicalName]
+                $c = $core[$lun.CanonicalName]; $d = $nmp[$lun.CanonicalName]; $h = $hpp[$lun.CanonicalName]
+                $devPaths = @($paths[$lun.CanonicalName] | Where-Object { $_ })
+                $active = @($devPaths | Where-Object { "$($_.State)" -eq 'active' })
                 $report.Add([pscustomobject]@{
                         VMHost                                = $esx.Name
                         LUNName                               = $lun.DisplayName
@@ -180,16 +191,19 @@ try {
                         LunType                               = $lun.LunType
                         CapacityGB                            = [math]::Round($lun.CapacityGB, 2)
                         MultipathPolicy                       = $lun.MultipathPolicy
-                        PathSelectionPolicy                   = $d.PathSelectionPolicy
-                        PathSelectionPolicyDeviceConfig       = $d.PathSelectionPolicyDeviceConfig
+                        MultipathPlugin                       = $(if ($c.MultipathPlugin) { $c.MultipathPlugin } elseif ($d) { 'NMP' } elseif ($h) { 'HPP' })
+                        # NMP: path selection policy (PSP). HPP: path selection scheme (PSS).
+                        PathSelectionPolicy                   = $(if ($d) { $d.PathSelectionPolicy } else { $h.PathSelectionScheme })
+                        PathSelectionPolicyDeviceConfig       = $(if ($d) { $d.PathSelectionPolicyDeviceConfig } elseif ($h.PathSelectionSchemeConfig) { $h.PathSelectionSchemeConfig } else { $h.PathSelectionSchemeConfiguration })
                         PathSelectionPolicyDeviceCustomConfig = $d.PathSelectionPolicyDeviceCustomConfig
                         StorageArrayType                      = $d.StorageArrayType
                         StorageArrayTypeDeviceConfig          = $d.StorageArrayTypeDeviceConfig
-                        WorkingPathCount                      = @($d.WorkingPaths | Where-Object { $_ }).Count
-                        WorkingPaths                          = @($d.WorkingPaths) -join ', '
-                        IsLocalSASDevice                      = $d.IsLocalSASDevice
-                        IsUSB                                 = $d.IsUSB
-                        IsBootUSBDevice                       = $d.IsBootUSBDevice
+                        PathCount                             = $devPaths.Count
+                        WorkingPathCount                      = $active.Count
+                        WorkingPaths                          = ($active | ForEach-Object { $_.RuntimeName }) -join ', '
+                        IsLocal                               = $c.IsLocal
+                        IsUSB                                 = $c.IsUSB
+                        IsBootDevice                          = $c.IsBootDevice
                     })
             }
         }

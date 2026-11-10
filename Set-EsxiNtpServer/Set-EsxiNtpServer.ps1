@@ -56,7 +56,7 @@
     .\Set-EsxiNtpServer.ps1 -ConfigFile .\ntp.config.json -UseSddcCredentials -SddcManager sddc01.corp.local
 
 .NOTES
-    Version: 2.0 (2026-11-10)
+    Version: 2.0.1 (2026-11-10)
     Requires PowerShell 7 or Windows PowerShell 5.1 and VCF.PowerCLI (or VMware.PowerCLI).
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Medium')]
@@ -172,6 +172,7 @@ foreach ($esxiName in $VMHost) {
                 foreach ($ntp in $NtpServer) { Add-VMHostNtpServer -VMHost $esx -NtpServer $ntp -Server $vi -Confirm:$false | Out-Null }
                 $result.Message = "NTP servers changed (were: $(if ($current) { $current -join ', ' } else { 'none' }))"
             }
+            else { $result.Message = "WhatIf: NTP servers would change (now: $(if ($current) { $current -join ', ' } else { 'none' }))" }
         }
         else { $result.Message = 'NTP servers already correct' }
 
@@ -194,7 +195,8 @@ foreach ($esxiName in $VMHost) {
         Write-Warning "$esxiName : $($_.Exception.Message)"
     }
     finally {
-        if ($vi) { Disconnect-VIServer -Server $vi -Confirm:$false -ErrorAction SilentlyContinue }
+        # -WhatIf:$false: also close the session in a -WhatIf run.
+        if ($vi) { Disconnect-VIServer -Server $vi -Confirm:$false -WhatIf:$false -ErrorAction SilentlyContinue }
     }
     [pscustomobject]$result
 }

@@ -1,8 +1,8 @@
 # Get-LunMultipathReport
 
-Lists every LUN of one or more ESXi hosts with its multipath details, so you can check that all LUNs of an array use the right path selection policy and have all their paths. It combines `Get-ScsiLun` with `esxcli storage nmp device list`.
+Lists every LUN of one or more ESXi hosts with its multipath details, so you can check that all LUNs of an array use the right path selection policy and have all their paths. It combines `Get-ScsiLun` with `esxcli storage core device list`, `storage core path list`, `storage nmp device list` and `storage hpp device list`, so devices claimed by NMP (typically SAN LUNs) and by HPP (local NVMe, SAS and SATA by default since ESXi 7, so most vSAN disks) both show up.
 
-Per LUN: display name, canonical name, type, capacity, multipath policy, path selection policy (PSP) and its config, storage array type (SATP) and its config, number of working paths and the paths, and whether the device is local SAS, USB or the boot device.
+Per LUN: display name, canonical name, type, capacity, multipath plugin (`NMP` or `HPP`), multipath policy, path selection policy (PSP for NMP, path selection scheme for HPP) and its config, storage array type (SATP, NMP only) and its config, total and active paths, and whether the device is local, USB or the boot device.
 
 The script only reads. It changes nothing.
 
