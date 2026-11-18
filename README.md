@@ -8,6 +8,8 @@ PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). E
 | [Get-LunMultipathReport](Get-LunMultipathReport/) | Lists every LUN of one or more ESXi hosts with multipath policy, PSP, SATP and working paths. | No |
 | [Get-TpmRecoveryKey](Get-TpmRecoveryKey/) | Reports the TPM recovery key of every ESXi host in a cluster. | No |
 | [Set-EsxiNtpServer](Set-EsxiNtpServer/) | Sets the NTP servers and the ntpd service directly on ESXi hosts. Supports `-WhatIf`. | **Yes** |
+| [Export-VcfBackupSettings](Export-VcfBackupSettings/) | VCF: exports the backup settings of SDDC Manager, vCenter and fleet management to JSON. | No |
+| [Set-VcfBackupSettings](Set-VcfBackupSettings/) | VCF: sets the SFTP backup target, schedule, retention and encryption on SDDC Manager and vCenter. Supports `-WhatIf`. | **Yes** |
 
 ## Common conventions
 

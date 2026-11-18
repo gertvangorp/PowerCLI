@@ -28,7 +28,8 @@ Copy-Item .\config\environment.config.sample.json .\config\customer1.config.json
   "PrimaryDatastore":   { },
   "LunMultipathReport": { "VMHost": ["..."], "CsvPath": "..." },
   "TpmRecoveryKey":     { "Cluster": ["..."] },
-  "EsxiNtpServer":      { "VMHost": ["..."], "NtpServer": ["..."] }
+  "EsxiNtpServer":      { "VMHost": ["..."], "NtpServer": ["..."] },
+  "VcfBackupSettings":  { "VCenter": ["..."], "SftpUser": "...", "BackupTarget": { }, "SddcManagerBackup": { }, "VCenterBackup": { } }
 }
 ```
 
@@ -40,8 +41,9 @@ Each script reads the top-level keys, then `Common`, then its own section; a lat
 | `LunMultipathReport` | [Get-LunMultipathReport](../Get-LunMultipathReport/) |
 | `TpmRecoveryKey` | [Get-TpmRecoveryKey](../Get-TpmRecoveryKey/) |
 | `EsxiNtpServer` | [Set-EsxiNtpServer](../Set-EsxiNtpServer/) |
+| `VcfBackupSettings` | [Export-VcfBackupSettings](../Export-VcfBackupSettings/) and [Set-VcfBackupSettings](../Set-VcfBackupSettings/) (one section for both) |
 
-A new script adds its own section here and in the sample.
+A new script adds its own section here and in the sample. Most sections are flat; `VcfBackupSettings` also has nested blocks (`BackupTarget`, `SddcManagerBackup`, `VCenterBackup`) that only the backup scripts read.
 
 ## Keys
 
@@ -49,13 +51,16 @@ A new script adds its own section here and in the sample.
 |---|---|---|
 | `Environment` | all | Name shown in the console and used for `{env}` in paths. Default: the file name |
 | `SddcManager` | all | SDDC Manager FQDN (a list is allowed; these scripts take the first) |
-| `VCenter` | LUN, TPM | vCenter FQDN |
+| `VCenter` | LUN, TPM, backup | vCenter FQDN (the backup scripts take a list) |
 | `SddcUser` / `SddcCredentialFile` | all | SDDC Manager account |
 | `VcUser` / `VcCredentialFile` | LUN, TPM | vCenter account |
 | `EsxiUser` / `EsxiCredentialFile` | NTP | ESXi account (root) |
-| `UseSddcCredentials` | LUN, TPM, NTP | Read vCenter / ESXi passwords from the SDDC Manager vault |
+| `UseSddcCredentials` | LUN, TPM, NTP, backup | Read vCenter / ESXi passwords from the SDDC Manager vault |
 | `SkipCertificateCheck` | all | **Lab only.** Skip TLS validation of SDDC Manager |
-| `VMHost`, `NtpServer`, `Cluster`, `CsvPath` | per script | See the script's README |
+| `SftpUser` / `SftpCredentialFile` | backup | Account on the SFTP backup server |
+| `EncryptionCredentialFile` | backup | Backup encryption passphrase, stored as the password of a credential file |
+| `FleetManager`, `FleetUser` / `FleetCredentialFile` | backup export | VCF Operations fleet management appliance and account (admin@local) |
+| `VMHost`, `NtpServer`, `Cluster`, `CsvPath`, `OutputPath` | per script | See the script's README |
 
 Paths can use `{date}` (yyyyMMdd-HHmm), `{env}` (environment name) and `%VARIABLES%`, for example `%USERPROFILE%\Reports\{env}-lun-report-{date}.csv`.
 
