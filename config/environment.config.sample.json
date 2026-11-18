@@ -24,5 +24,43 @@
   "EsxiNtpServer": {
     "VMHost": ["esx01.lab1.local", "esx02.lab1.local"],
     "NtpServer": ["0.be.pool.ntp.org", "1.be.pool.ntp.org"]
+  },
+  "VcfBackupSettings": {
+    "_comment": "Used by Export-VcfBackupSettings and Set-VcfBackupSettings. VCenter here overrides Common. The SFTP password and the encryption passphrase are never stored here: SftpUser (prompt) or SftpCredentialFile, EncryptionCredentialFile (or prompt).",
+    "VCenter": ["vc01.lab1.local"],
+    "FleetManager": "",
+    "_FleetUser": "admin@local",
+    "OutputPath": "%USERPROFILE%\\Reports\\vcf-backup-settings\\{env}",
+    "IncludeJobHistory": false,
+    "SftpUser": "svc-vcfbackup",
+    "_SftpCredentialFile": "%USERPROFILE%\\creds\\lab1-sftp.xml",
+    "_EncryptionCredentialFile": "%USERPROFILE%\\creds\\lab1-backup-encryption.xml",
+    "BackupTarget": {
+      "Server": "sftp01.lab1.local",
+      "Port": 22,
+      "SshFingerprint": "SHA256:REPLACE_WITH_SFTP_HOST_KEY_FINGERPRINT"
+    },
+    "SddcManagerBackup": {
+      "Enabled": true,
+      "DirectoryPath": "/backups/sddc",
+      "Frequency": "WEEKLY",
+      "DaysOfWeek": ["SUNDAY", "WEDNESDAY"],
+      "HourOfTheDay": 2,
+      "MinuteOfTheHour": 0,
+      "TakeBackupOnStateChange": true,
+      "RetainMostRecent": 5,
+      "RetainHourlyDays": 1,
+      "RetainDailyDays": 7
+    },
+    "VCenterBackup": {
+      "Enabled": true,
+      "ScheduleId": "default",
+      "DirectoryPath": "/backups/vcenter/{vcenter}",
+      "IncludeStatsEventsTasks": false,
+      "Days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"],
+      "Hour": 23,
+      "Minute": 0,
+      "MaxCount": 7
+    }
   }
 }
