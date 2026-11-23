@@ -152,7 +152,8 @@ Releases checked: ESXi 9.0, ESXi 9.1
 
 - the environment, vCenter, target range, releases checked and the warnings of the run;
 - summary cards per status (click a card to hide or show those rows);
-- a table of components by status;
+- **Needs attention**: one line per unique component that is not Supported (the same NIC on ten hosts is one line), with the reason, the hosts that have it and the guide link;
+- a table of components by status with a total. The numbers count rows (one per component per host); every row is in exactly one status, so "12 Supported, 4 NotFound" means 16 different rows;
 - one section per host with every component, a coloured status, the PCI IDs and driver, releases in range and missing, and a link to the guide page. Hosts with a problem are expanded; the others are collapsed;
 - a filter box that searches host, device name, IDs, driver, model and releases.
 

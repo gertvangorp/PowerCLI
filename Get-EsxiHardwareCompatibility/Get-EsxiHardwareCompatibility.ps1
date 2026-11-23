@@ -511,16 +511,39 @@ details[open] summary{border-radius:10px 10px 0 0;border-bottom:0}details table{
         $n = @($Report | Where-Object Status -eq $s).Count
         [void]$sb.Append("<div class=`"card $($cls[$s])`" data-status=`"$s`" title=`"Click to show or hide`"><div class=`"n`">$n</div><div class=`"l`">$s</div></div>")
     }
-    [void]$sb.Append('</div><h2>Per component</h2><div class="scroll"><table><tr><th>Component</th>')
+    [void]$sb.Append("<div class=`"card muted`" style=`"cursor:default`"><div class=`"n`">$($Report.Count)</div><div class=`"l`">Rows in total</div></div>")
+    [void]$sb.Append('</div>')
+
+    # Needs attention: every unique component (same IDs or model on several hosts = one line) that is not fine.
+    $attention = @($Report | Where-Object { $cls[$_.Status] -in 'bad', 'warn' } |
+            Group-Object Component, Name, VID, DID, SVID, SSID, Status |
+            Sort-Object { [array]::IndexOf($order, $_.Group[0].Status) }, Name)
+    [void]$sb.Append("<h2>Needs attention ($($attention.Count))</h2>")
+    if (-not $attention) { [void]$sb.Append('<p class="small">Every checked component is supported (or virtual) for the releases checked.</p>') }
+    else {
+        [void]$sb.Append('<p class="small">One line per unique component that is not Supported, with the hosts that have it.</p><div class="scroll"><table><tr><th>Status</th><th>Component</th><th>Name</th><th>IDs</th><th>Missing releases / reason</th><th>Hosts</th><th>Guide</th></tr>')
+        foreach ($g in $attention) {
+            $r = $g.Group[0]
+            $ids = if ($r.VID) { "<span class=`"ids`">$($r.VID):$($r.DID):$($r.SVID):$($r.SSID)</span>" } else { '' }
+            $why = if ($r.MissingReleases) { "Missing: $(& $e $r.MissingReleases)" } else { '' }
+            if ($r.Message) { $why += "<div class=`"small`">$(& $e $r.Message)</div>" }
+            $hostsTxt = (@($g.Group.VMHost | Sort-Object -Unique) | ForEach-Object { & $e $_ }) -join '<br>'
+            $guide = if ($r.CompatibilityGuideUrl) { "<a href=`"$(& $e $r.CompatibilityGuideUrl)`" target=`"_blank`" rel=`"noopener`">open</a>" } else { '' }
+            [void]$sb.Append("<tr><td><span class=`"badge $($cls[$r.Status])`">$($r.Status)</span></td><td>$(& $e $r.Component)</td><td>$(& $e $r.Name)</td><td>$ids</td><td class=`"small`">$why</td><td class=`"small`">$hostsTxt</td><td>$guide</td></tr>")
+        }
+        [void]$sb.Append('</table></div>')
+    }
+
+    [void]$sb.Append('<h2>Per component</h2><p class="small">Number of rows (one per component per host) in each status. Every row is in exactly one column: 12 Supported and 4 NotFound means 16 different rows, not one device with two answers.</p><div class="scroll"><table><tr><th>Component</th>')
     foreach ($s in $statuses) { [void]$sb.Append("<th class=`"num`">$s</th>") }
-    [void]$sb.Append('</tr>')
+    [void]$sb.Append('<th class="num">Total</th></tr>')
     foreach ($c in @($Report.Component | Select-Object -Unique)) {
         [void]$sb.Append("<tr><td>$(& $e $c)</td>")
         foreach ($s in $statuses) {
             $n = @($Report | Where-Object { $_.Component -eq $c -and $_.Status -eq $s }).Count
             [void]$sb.Append($(if ($n) { "<td class=`"num`"><span class=`"badge $($cls[$s])`">$n</span></td>" } else { '<td class="num small">-</td>' }))
         }
-        [void]$sb.Append('</tr>')
+        [void]$sb.Append("<td class=`"num`"><b>$(@($Report | Where-Object Component -eq $c).Count)</b></td></tr>")
     }
     [void]$sb.Append('</table></div>')
 
@@ -552,7 +575,7 @@ Releases checked are the releases in the range that the guide lists for at least
 (function(){var off={},q=document.getElementById('q');
 function apply(){var t=(q.value||'').toLowerCase();document.querySelectorAll('tr[data-search]').forEach(function(r){r.style.display=(!off[r.dataset.status]&&(!t||r.dataset.search.indexOf(t)>=0))?'':'none'});
 document.querySelectorAll('details').forEach(function(d){var v=d.querySelectorAll('tr[data-search]:not([style*="none"])').length;d.style.display=v?'':'none';if(t&&v)d.open=true})}
-document.querySelectorAll('.card').forEach(function(c){c.addEventListener('click',function(){var s=c.dataset.status;off[s]=!off[s];c.classList.toggle('off',off[s]);apply()})});
+document.querySelectorAll('.card[data-status]').forEach(function(c){c.addEventListener('click',function(){var s=c.dataset.status;off[s]=!off[s];c.classList.toggle('off',off[s]);apply()})});
 q.addEventListener('input',apply);
 document.getElementById('all').onclick=function(){document.querySelectorAll('details').forEach(function(d){d.open=true})};
 document.getElementById('none').onclick=function(){document.querySelectorAll('details').forEach(function(d){d.open=false})};})();
