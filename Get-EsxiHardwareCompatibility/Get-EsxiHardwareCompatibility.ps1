@@ -25,6 +25,20 @@
     PCI lookups first match all four IDs; when that finds nothing they retry without the subdevice
     ID and HclMatch says WithoutSSID (check the model on the linked page).
 
+    Driver and firmware (PCI, vSAN controller, vSAN NVMe and vSAN disk rows): the script reads the
+    driver version (the loaded VMkernel module) and, where ESXi reports it, the firmware of each
+    device, and compares them with the driver and firmware versions the guide lists for each
+    release in the range (without a range: for the release the host runs now):
+      DriverStatus    OK (the running driver is listed for every release), Update (another driver
+                      version is needed for at least one release; DriverCheck says which),
+                      Unknown (the host did not report its driver version), NoData (the guide
+                      lists no driver for the release)
+      FirmwareStatus  OK (the running firmware is listed, or is at least the listed minimum),
+                      Check (it is not listed: compare on the guide page, vendors often write
+                      firmware versions differently), Unknown (ESXi does not report the firmware,
+                      common for RAID/SAS controllers), NoData (the guide lists no firmware)
+    These never change Status: a device can be Supported and still need another driver.
+
     Without a version range, each row lists the ESXi releases the guide supports. With
     -MinEsxiVersion and/or -MaxEsxiVersion, each row also gets a Status for that range:
       Supported      listed for every ESXi release in the range
@@ -82,6 +96,10 @@
 .PARAMETER SkipHclLookup
     Only inventory the hardware; do not query the Compatibility Guide. Config: SkipHclLookup.
 
+.PARAMETER SkipDriverCheck
+    Do not read driver and firmware versions from the hosts and do not compare them with the guide
+    (faster: no extra esxcli calls and no guide detail pages). Config: SkipDriverCheck.
+
 .PARAMETER CsvPath
     Optional CSV export path; the folder is created when needed. "{date}" is replaced with
     yyyyMMdd-HHmm, "{env}" with the environment name. Config: CsvPath.
@@ -132,9 +150,15 @@
     $r | Where-Object Status -ne 'Supported' | Sort-Object Component, Name, VID, DID, SVID, SSID -Unique |
         Format-Table Component, Name, Status, MissingReleases, CompatibilityGuideUrl
 
+.EXAMPLE
+    # Which drivers are needed for 9.0 and 9.1, and which firmware should be checked?
+    $r = .\Get-EsxiHardwareCompatibility.ps1 -Environment lab1 -MinEsxiVersion 9.0 -MaxEsxiVersion 9.1.1
+    $r | Where-Object { $_.DriverStatus -eq 'Update' -or $_.FirmwareStatus -eq 'Check' } | Sort-Object Name, DriverVersion, Firmware -Unique |
+        Format-Table Name, DriverVersion, DriverCheck, Firmware, FirmwareCheck -Wrap
+
 .NOTES
     Name        : Get-EsxiHardwareCompatibility.ps1
-    Version     : 2.0
+    Version     : 2.1
     Date        : 2026-11-23
     Author      : Gert (https://www.v-consult.be)
     Repository  : https://github.com/gertvangorp/PowerCLI
@@ -146,6 +170,8 @@
     License     : provided as is, without warranty. Test in a lab first.
 
     Version history
+    2.1  2026-11-23  Driver and firmware check: running driver and firmware per device compared with the
+                     versions the guide lists per release (DriverStatus, FirmwareStatus), -SkipDriverCheck.
     2.0  2026-11-23  Rewrite (was Report-PCIDevices.ps1): environment config, standard header, ESXi
                      version range with Status, server/CPU/vSAN checks, storage controllers by default,
                      subdevice ID filter fixed (maxSsid), IDs zero-padded, lookup cache, CSV and HTML report.
@@ -166,6 +192,7 @@ param(
     [ValidateSet('Auto', 'Always', 'Never')]
     [string]$VsanCheck = 'Auto',
     [switch]$SkipHclLookup,
+    [switch]$SkipDriverCheck,
     [string]$CsvPath,
     [string]$HtmlPath,
     [pscredential]$Credential,
@@ -178,13 +205,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ScriptVersion = '2.0 (2026-11-23)'
+$script:ScriptVersion = '2.1 (2026-11-23)'
 Write-Host "Get-EsxiHardwareCompatibility.ps1 version $script:ScriptVersion" -ForegroundColor Cyan
 $isCore = $PSVersionTable.PSEdition -eq 'Core'
 
 # Settings this script reads from the environment config (key = parameter name).
 $ConfigSection = 'HardwareCompatibility'
-$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; MinEsxiVersion = 'string'; MaxEsxiVersion = 'string'; Component = 'list'; DeviceClass = 'list'; VsanCheck = 'string'; SkipHclLookup = 'switch'; CsvPath = 'string'; HtmlPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
+$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; MinEsxiVersion = 'string'; MaxEsxiVersion = 'string'; Component = 'list'; DeviceClass = 'list'; VsanCheck = 'string'; SkipHclLookup = 'switch'; SkipDriverCheck = 'switch'; CsvPath = 'string'; HtmlPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
 $ConfigCredentials = [ordered]@{ Vc = 'Credential'; Sddc = 'SddcCredential' }
 
 #region Environment config file (shared: identical in every script, checked by CI) -------------
@@ -342,7 +369,7 @@ function Invoke-Bcg([string]$Program, [System.Collections.IDictionary]$Filter, [
     (Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Headers @{ 'user-persona' = 'live' } -Body $body).data
 }
 function New-Lookup([string]$Program) {
-    [pscustomobject]@{ Program = $Program; Match = 'None'; Brand = ''; Model = ''; Names = @(); Releases = @(); Url = ''; Error = ''; Note = '' }
+    [pscustomobject]@{ Program = $Program; Match = 'None'; Brand = ''; Model = ''; Names = @(); Releases = @(); Ids = @(); Url = ''; Error = ''; Note = '' }
 }
 function Set-LookupResult($Lookup, $Entries, [string]$Match) {
     # Several entries (models, capacities) can match: the component is supported on the union of their releases.
@@ -352,6 +379,8 @@ function Set-LookupResult($Lookup, $Entries, [string]$Match) {
     $Lookup.Names = @($Entries | ForEach-Object { if ($_.model) { $_.model.name } else { $_.cpuSeries.name } } | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Sort-Object -Unique)
     $Lookup.Model = $Lookup.Names -join ' | '
     $Lookup.Releases = ConvertTo-ReleaseList @($Entries | ForEach-Object { $_.supportedReleases })
+    # Entry ids, for the detail page with the driver and firmware versions per release.
+    $Lookup.Ids = @($Entries | ForEach-Object { if ($_.uuid) { "$($_.uuid)" } elseif ("$(@($_.model.url)[0])" -match 'productId=(\w+)') { $Matches[1] } } | Where-Object { $_ } | Select-Object -Unique)
     if (@($Entries).Count -eq 1) {
         $u = @($Entries)[0].model.url; if (-not $u) { $u = @($Entries)[0].cpuSeries.url }
         if ($u) { $Lookup.Url = "$BcgBase/detail$(@($u)[0])&persona=live" }
@@ -458,6 +487,153 @@ function Test-InRange([string]$Release) {
     $v = ConvertTo-EsxiVersion $Release
     $null -ne $v -and (-not $minVer -or $v -ge $minVer) -and (-not $maxVer -or $v -le $maxVer)
 }
+function Get-BcgDetail([string]$Program, [string]$Id) {
+    # POST /compguide/programs/viewDetails: the release table of one entry, with driver and firmware per release.
+    # IO Devices: driverName + driverVersion, firmwareVersion (+ additionalFirmwareVersion).
+    # vSAN I/O Controller: deviceDriver "smartpqi version 90.4902.0.103-1OEM.900", firmwareVersion.
+    # vSAN SSD/HDD: minimumFirmwareVersion (deviceDriver mostly empty).
+    $key = "$Program|$Id"
+    if ($detailCache.ContainsKey($key)) { return $detailCache[$key] }
+    $list = @()
+    try {
+        $uri = "$BcgBase/compguide/programs/viewDetails?programId=$Program&id=$Id&filterBy="
+        $d = (Invoke-RestMethod -Uri $uri -Method Post -Headers @{ 'user-persona' = 'live'; accept = 'application/json' } -Body '').data
+        $list = @(foreach ($section in @($d.details)) {
+                foreach ($sub in @($section.subsections | Where-Object { $_.type -eq 'table' })) {
+                    foreach ($v in @($sub.fieldValues)) {
+                        $rel = ConvertTo-EsxiVersion "$($v.release)"
+                        if (-not $rel) { continue }
+                        $drv = "$($v.driverName)".Trim(); $ver = "$($v.driverVersion)".Trim()
+                        if (-not $ver -and "$($v.deviceDriver)" -match '^\s*(\S+)\s+version\s+(\S+)') { $drv = $Matches[1]; $ver = $Matches[2] }
+                        [pscustomobject]@{
+                            Release       = Get-ReleaseLabel $rel
+                            Driver        = $drv
+                            DriverVersion = $ver
+                            Firmware      = @(@($v.firmwareVersion, $v.additionalFirmwareVersion, $v.firmwarePackageVersion) | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+                            MinFirmware   = "$($v.minimumFirmwareVersion)".Trim()
+                        }
+                    }
+                }
+            })
+    }
+    catch { $detailFailed[$key] = $true; Add-Note "Compatibility Guide detail page $key failed: $($_.Exception.Message)" }
+    $detailCache[$key] = $list
+    $list
+}
+function Get-DeviceDriverFirmware($EsxCli, $Device, [hashtable]$HostCache) {
+    # Running driver version (the loaded VMkernel module) and firmware of one PCI device. Empty when ESXi does
+    # not report it: RAID/SAS controllers usually do not show their firmware through esxcli.
+    $mod = "$($Device.ModuleName)".Trim(); $vmk = "$($Device.VMkernelName)".Trim()
+    $result = @{ DriverVersion = ''; Firmware = '' }
+    if ($mod -and $mod -ne 'None') {
+        if (-not $HostCache.ContainsKey("mod|$mod")) {
+            $HostCache["mod|$mod"] = ''
+            try { $HostCache["mod|$mod"] = "$(@($EsxCli.system.module.get.Invoke(@{ module = $mod }))[0].Version)".Trim() }
+            catch { Write-Verbose "system module get $mod : $($_.Exception.Message)" }
+        }
+        $result.DriverVersion = $HostCache["mod|$mod"]
+    }
+    try {
+        if ($vmk -like 'vmnic*') {
+            $result.Firmware = "$(@($EsxCli.network.nic.get.Invoke(@{ nicname = $vmk }))[0].DriverInfo.FirmwareVersion)".Trim()
+        }
+        elseif ($vmk -like 'vmhba*') {
+            if (-not $HostCache.ContainsKey('fc')) {
+                $HostCache.fc = @{}
+                try { foreach ($a in @($EsxCli.storage.san.fc.list.Invoke())) { $HostCache.fc["$($a.Adapter)"] = "$($a.FirmwareVersion)".Trim() } }
+                catch { Write-Verbose "storage san fc list: $($_.Exception.Message)" }
+            }
+            if ($HostCache.fc.ContainsKey($vmk)) { $result.Firmware = $HostCache.fc[$vmk] }
+            elseif ("$($Device.DeviceClassName)" -match 'Non-Volatile memory') {
+                $result.Firmware = "$(@($EsxCli.nvme.device.get.Invoke(@{ adapter = $vmk }))[0].FirmwareRevision)".Trim()
+            }
+        }
+    }
+    catch { Write-Verbose "Firmware of $vmk : $($_.Exception.Message)" }
+    $result
+}
+function Test-DriverVersion([string]$HostVersion, [string]$GuideVersion) {
+    # The host reports the full build ("2.5.2.0-1OEM.800.1.0.20613240"), the guide a prefix of it ("2.5.2.0-1OEM",
+    # or "90.4902.0.103-1OEM.900" in the vSAN lists).
+    $h = $HostVersion.Trim().ToLowerInvariant(); $g = $GuideVersion.Trim().ToLowerInvariant()
+    [bool]($h -and $g -and ($h -eq $g -or $h.StartsWith("$g.") -or $h.StartsWith("$g-")))
+}
+function Test-FirmwareVersion([string]$HostFirmware, [string[]]$Listed, [string]$Minimum) {
+    # Listed: the running firmware is one of them (the host string may hold more, as "4.40 0x8001c967 1.3534.0").
+    # Minimum: the running firmware is the same or higher, when both are plain version numbers.
+    $norm = { param($x) ("$x".Trim().ToLowerInvariant() -replace '^v(?=\d)', '') }
+    $h = & $norm $HostFirmware
+    if (-not $h) { return $false }
+    $tokens = @($h -split '[\s,/;()]+' | Where-Object { $_ })
+    foreach ($g in @($Listed) + @($Minimum)) {
+        $g = & $norm $g
+        if ($g -and ($h -eq $g -or $g -in $tokens)) { return $true }
+    }
+    $hv = $null; $mv = $null
+    if ($Minimum -and [version]::TryParse((& $norm $HostFirmware), [ref]$hv) -and [version]::TryParse((& $norm $Minimum), [ref]$mv)) { return $hv -ge $mv }
+    $false
+}
+function Get-VersionSortKey([string]$Text) {
+    # Sorts "90.4902.0.103-1OEM" above "90.4880.0.109-1OEM" and "8.40" above "8.23": the leading numbers, zero-padded.
+    (@([regex]::Matches($Text, '\d+') | Select-Object -First 6 | ForEach-Object { $_.Value.PadLeft(10, '0') }) -join '.') + "|$Text"
+}
+function Get-DriverFirmwareCheck($Lookup, [string[]]$Targets, [string]$DriverName, [string]$DriverVersion, [string]$Firmware) {
+    # Compares the running driver and firmware with what the guide lists for each target release.
+    $res = [ordered]@{ DriverStatus = ''; DriverCheck = ''; FirmwareStatus = ''; FirmwareCheck = '' }
+    if (-not $Targets -or -not $Lookup.Ids) { return $res }
+    # One device can match several entries; their release tables together are what the guide allows.
+    $ids = @($Lookup.Ids | Select-Object -First 5)
+    $all = @(foreach ($id in $ids) { Get-BcgDetail $Lookup.Program $id })
+    if (-not $all -and @($ids | Where-Object { $detailFailed["$($Lookup.Program)|$_"] })) {
+        $res.FirmwareStatus = 'Unknown'; $res.FirmwareCheck = 'The guide detail page could not be read (see the warnings)'
+        if ($DriverName) { $res.DriverStatus = 'Unknown'; $res.DriverCheck = $res.FirmwareCheck }
+        return $res
+    }
+    $dRank = @('Update', 'Unknown', 'NoData', 'OK'); $fRank = @('Check', 'Unknown', 'NoData', 'OK')
+    $dOut = [ordered]@{}; $fOut = [ordered]@{}
+    foreach ($t in $Targets) {
+        $rel = @($all | Where-Object Release -eq $t)
+        $named = @($rel | Where-Object { $DriverName -and $_.Driver -eq $DriverName })
+        if ($named) { $rel = $named }   # IO entries list every driver of a card (icen and irdman): compare like with like.
+        # Driver (not for disks: they have no driver of their own).
+        $matched = @()
+        if ($DriverName) {
+            $listed = @($rel | ForEach-Object { $_.DriverVersion } | Where-Object { $_ } | Select-Object -Unique | Sort-Object { Get-VersionSortKey $_ } -Descending)
+            $matched = @($rel | Where-Object { $_.DriverVersion -and (Test-DriverVersion $DriverVersion $_.DriverVersion) })
+            $show = "$($listed[0])" + $(if ($listed.Count -gt 1) { " (newest of $($listed.Count) listed)" } else { '' })
+            $d = if (-not $listed) { 'NoData', 'no driver listed' }
+            elseif (-not $DriverVersion) { 'Unknown', "guide lists $show" }
+            elseif ($matched) { 'OK', 'OK' }
+            else { 'Update', "needs $(if ($rel[0].Driver) { "$($rel[0].Driver) " })$show" }
+            $dOut[$t] = $d
+        }
+        # Firmware: of the rows with the running driver when there are any (the guide pairs them), else of the release.
+        $fwRows = if ($matched) { $matched } else { $rel }
+        $fwListed = @($fwRows | ForEach-Object { $_.Firmware } | Where-Object { $_ } | Select-Object -Unique | Sort-Object { Get-VersionSortKey $_ } -Descending)
+        $fwMin = @($fwRows | ForEach-Object { $_.MinFirmware } | Where-Object { $_ } | Select-Object -Unique)
+        $fwAll = @($fwListed) + @($fwMin | ForEach-Object { "$_ (minimum)" })
+        $fwText = (@($fwAll | Select-Object -First 3) -join ', ') + $(if ($fwAll.Count -gt 3) { " (+$($fwAll.Count - 3) more)" } else { '' })
+        $f = if (-not $fwListed -and -not $fwMin) { 'NoData', 'no firmware listed' }
+        elseif (-not $Firmware) { 'Unknown', "guide lists $fwText" }
+        elseif (@($fwMin | Where-Object { Test-FirmwareVersion $Firmware $fwListed $_ }) -or (Test-FirmwareVersion $Firmware $fwListed '')) { 'OK', 'OK' }
+        else { 'Check', "guide lists $fwText" }
+        $fOut[$t] = $f
+    }
+    # Releases with the same answer are shown together: "ESXi 9.0, ESXi 9.1: OK".
+    $text = {
+        param($out)
+        $byText = [ordered]@{}
+        foreach ($t in $out.Keys) { $byText[$out[$t][1]] = @($byText[$out[$t][1]] | Where-Object { $_ }) + $t }
+        (@($byText.Keys | ForEach-Object { "$($byText[$_] -join ', '): $_" }) -join '; ')
+    }
+    if ($dOut.Count) {
+        $res.DriverStatus = @($dRank | Where-Object { $_ -in @($dOut.Values | ForEach-Object { $_[0] }) })[0]
+        $res.DriverCheck = & $text $dOut
+    }
+    $res.FirmwareStatus = @($fRank | Where-Object { $_ -in @($fOut.Values | ForEach-Object { $_[0] }) })[0]
+    $res.FirmwareCheck = & $text $fOut
+    $res
+}
 #endregion
 
 #region HTML report -----------------------------------------------------------------------------
@@ -467,6 +643,17 @@ function Export-HtmlReport($Report, [string]$Path, [System.Collections.IDictiona
     $order = @('NotSupported', 'NotFound', 'LookupFailed', 'Failed', 'Partial', 'Skipped', 'NotChecked', 'Found', 'Supported', 'NotApplicable')
     $cls = @{ Supported = 'ok'; Found = 'ok'; Partial = 'warn'; NotSupported = 'bad'; NotFound = 'bad'; LookupFailed = 'bad'; Failed = 'bad'; Skipped = 'muted'; NotChecked = 'muted'; NotApplicable = 'muted' }
     $e = { param($v) ConvertTo-HtmlText $v }
+    # Driver and firmware statuses have their own colours; they never change Status.
+    $dfCls = @{ OK = 'ok'; Update = 'warn'; Check = 'warn'; Unknown = 'muted'; NoData = 'muted' }
+    $dfCell = {
+        param($r)
+        $c = ''
+        if ($r.DriverVersion) { $c += "<div class=`"small`">Running: $(& $e $r.Driver) $(& $e $r.DriverVersion)</div>" }
+        if ($r.DriverStatus) { $c += "<div><span class=`"badge $($dfCls[$r.DriverStatus])`">Driver $($r.DriverStatus)</span> <span class=`"small`">$(& $e $r.DriverCheck)</span></div>" }
+        if ($r.Firmware) { $c += "<div class=`"small`">Firmware: $(& $e $r.Firmware)</div>" }
+        if ($r.FirmwareStatus) { $c += "<div><span class=`"badge $($dfCls[$r.FirmwareStatus])`">Firmware $($r.FirmwareStatus)</span> <span class=`"small`">$(& $e $r.FirmwareCheck)</span></div>" }
+        $c
+    }
     $sb = [System.Text.StringBuilder]::new()
     $title = "ESXi hardware compatibility - $($Info.Environment)"
     [void]$sb.Append(@"
@@ -494,7 +681,7 @@ a{color:var(--accent)}details{margin:10px 0}summary{cursor:pointer;padding:10px 
 details[open] summary{border-radius:10px 10px 0 0;border-bottom:0}details table{border-radius:0 0 10px 10px}summary .h{font-weight:600}summary .s{color:var(--muted)}
 .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}.bar input{flex:1;min-width:220px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
 .bar button{padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);cursor:pointer}
-.scroll{overflow-x:auto}footer{color:var(--muted);font-size:12px;margin-top:32px}
+.df div{margin:2px 0}.scroll{overflow-x:auto}footer{color:var(--muted);font-size:12px;margin-top:32px}
 @media print{.bar,.cards{display:none}details{break-inside:avoid}}
 </style></head><body><main>
 <h1>ESXi hardware compatibility</h1>
@@ -512,6 +699,12 @@ details[open] summary{border-radius:10px 10px 0 0;border-bottom:0}details table{
         [void]$sb.Append("<div class=`"card $($cls[$s])`" data-status=`"$s`" title=`"Click to show or hide`"><div class=`"n`">$n</div><div class=`"l`">$s</div></div>")
     }
     [void]$sb.Append("<div class=`"card muted`" style=`"cursor:default`"><div class=`"n`">$($Report.Count)</div><div class=`"l`">Rows in total</div></div>")
+    $dfRows = @($Report | Where-Object { $_.DriverStatus -or $_.FirmwareStatus })
+    if ($dfRows) {
+        $nd = @($dfRows | Where-Object DriverStatus -eq 'Update').Count; $nf = @($dfRows | Where-Object FirmwareStatus -eq 'Check').Count
+        [void]$sb.Append("<div class=`"card $(if ($nd) { 'warn' } else { 'ok' })`" style=`"cursor:default`"><div class=`"n`">$nd</div><div class=`"l`">Driver to update</div></div>")
+        [void]$sb.Append("<div class=`"card $(if ($nf) { 'warn' } else { 'ok' })`" style=`"cursor:default`"><div class=`"n`">$nf</div><div class=`"l`">Firmware to check</div></div>")
+    }
     [void]$sb.Append('</div>')
 
     # Needs attention: every unique component (same IDs or model on several hosts = one line) that is not fine.
@@ -532,6 +725,25 @@ details[open] summary{border-radius:10px 10px 0 0;border-bottom:0}details table{
             [void]$sb.Append("<tr><td><span class=`"badge $($cls[$r.Status])`">$($r.Status)</span></td><td>$(& $e $r.Component)</td><td>$(& $e $r.Name)</td><td>$ids</td><td class=`"small`">$why</td><td class=`"small`">$hostsTxt</td><td>$guide</td></tr>")
         }
         [void]$sb.Append('</table></div>')
+    }
+
+    # Driver and firmware: one line per unique device + running driver/firmware that needs an update or a look.
+    $dfAttention = @($Report | Where-Object { $_.DriverStatus -eq 'Update' -or $_.FirmwareStatus -eq 'Check' } |
+            Group-Object Component, Name, VID, DID, SVID, SSID, DriverVersion, Firmware, DriverCheck, FirmwareCheck | Sort-Object Name)
+    if ($dfRows) {
+        [void]$sb.Append("<h2>Driver and firmware ($($dfAttention.Count))</h2>")
+        if (-not $dfAttention) { [void]$sb.Append('<p class="small">Every running driver and firmware that could be compared is listed in the guide for the releases checked.</p>') }
+        else {
+            [void]$sb.Append('<p class="small">Devices whose running driver is not listed for a release checked (Update), or whose firmware is not one the guide lists (Check: vendors often write firmware differently, compare on the guide page). Firmware Unknown means ESXi does not report it.</p><div class="scroll"><table><tr><th>Component</th><th>Name</th><th>IDs</th><th>Driver and firmware</th><th>Hosts</th><th>Guide</th></tr>')
+            foreach ($g in $dfAttention) {
+                $r = $g.Group[0]
+                $ids = if ($r.VID) { "<span class=`"ids`">$($r.VID):$($r.DID):$($r.SVID):$($r.SSID)</span>" } else { '' }
+                $hostsTxt = (@($g.Group.VMHost | Sort-Object -Unique) | ForEach-Object { & $e $_ }) -join '<br>'
+                $guide = if ($r.CompatibilityGuideUrl) { "<a href=`"$(& $e $r.CompatibilityGuideUrl)`" target=`"_blank`" rel=`"noopener`">open</a>" } else { '' }
+                [void]$sb.Append("<tr><td>$(& $e $r.Component)</td><td>$(& $e $r.Name)</td><td>$ids</td><td class=`"df`">$(& $dfCell $r)</td><td class=`"small`">$hostsTxt</td><td>$guide</td></tr>")
+            }
+            [void]$sb.Append('</table></div>')
+        }
     }
 
     [void]$sb.Append('<h2>Per component</h2><p class="small">Number of rows (one per component per host) in each status. Every row is in exactly one column: 12 Supported and 4 NotFound means 16 different rows, not one device with two answers.</p><div class="scroll"><table><tr><th>Component</th>')
@@ -555,15 +767,15 @@ details[open] summary{border-radius:10px 10px 0 0;border-bottom:0}details table{
         $open = if ($cls[$worst] -in 'bad', 'warn') { ' open' } else { '' }
         $f = $rowsH[0]
         [void]$sb.Append("<details$open><summary><span class=`"h`">$(& $e $h.Name)</span><span class=`"s`">$(& $e $f.Cluster) &middot; ESXi $(& $e $f.EsxiVersion)</span><span class=`"badge $($cls[$worst])`">$worst</span></summary>")
-        [void]$sb.Append('<div class="scroll"><table><tr><th>Component</th><th>Name</th><th>Detail</th><th>IDs / driver</th><th>Status</th><th>In range</th><th>Missing</th><th>Guide</th></tr>')
+        [void]$sb.Append('<div class="scroll"><table><tr><th>Component</th><th>Name</th><th>Detail</th><th>IDs / driver</th><th>Status</th><th>In range</th><th>Missing</th><th>Driver and firmware</th><th>Guide</th></tr>')
         foreach ($r in $rowsH) {
             $ids = if ($r.VID) { "<span class=`"ids`">$($r.VID):$($r.DID):$($r.SVID):$($r.SSID)</span>" } else { '' }
             if ($r.Driver) { $ids += "<div class=`"small`">$(& $e $r.Driver)</div>" }
             $guide = if ($r.CompatibilityGuideUrl) { "<a href=`"$(& $e $r.CompatibilityGuideUrl)`" target=`"_blank`" rel=`"noopener`">open</a>" } else { '' }
             if ($r.HclModel) { $guide += "<div class=`"small`">$(& $e $r.HclModel)</div>" }
             $msg = if ($r.Message) { "<div class=`"small`">$(& $e $r.Message)</div>" } else { '' }
-            $search = (& $e ("$($r.VMHost) $($r.Component) $($r.Name) $($r.Detail) $($r.Driver) $($r.VID) $($r.DID) $($r.SVID) $($r.SSID) $($r.HclModel) $($r.Status) $($r.SupportedReleases)").ToLower())
-            [void]$sb.Append("<tr data-status=`"$($r.Status)`" data-search=`"$search`"><td>$(& $e $r.Component)</td><td>$(& $e $r.Name)$msg</td><td class=`"small`">$(& $e $r.Detail)</td><td>$ids</td><td><span class=`"badge $($cls[$r.Status])`">$(& $e $r.Status)</span></td><td class=`"small`">$(& $e $r.ReleasesInRange)</td><td class=`"small`">$(& $e $r.MissingReleases)</td><td>$guide</td></tr>")
+            $search = (& $e ("$($r.VMHost) $($r.Component) $($r.Name) $($r.Detail) $($r.Driver) $($r.VID) $($r.DID) $($r.SVID) $($r.SSID) $($r.HclModel) $($r.Status) $($r.SupportedReleases) $($r.DriverVersion) $($r.Firmware) $($r.DriverStatus) $($r.FirmwareStatus)").ToLower())
+            [void]$sb.Append("<tr data-status=`"$($r.Status)`" data-search=`"$search`"><td>$(& $e $r.Component)</td><td>$(& $e $r.Name)$msg</td><td class=`"small`">$(& $e $r.Detail)</td><td>$ids</td><td><span class=`"badge $($cls[$r.Status])`">$(& $e $r.Status)</span></td><td class=`"small`">$(& $e $r.ReleasesInRange)</td><td class=`"small`">$(& $e $r.MissingReleases)</td><td class=`"df`">$(& $dfCell $r)</td><td>$guide</td></tr>")
         }
         [void]$sb.Append('</table></div></details>')
     }
@@ -600,13 +812,15 @@ $storagePattern = 'Mass storage|RAID|SCSI|Serial Attached|SATA|Non-Volatile memo
 Write-Host "Components: $($Component -join ', '). PCI classes: $classPattern. vSAN checks: $VsanCheck" -ForegroundColor Cyan
 
 $hclCache = @{}
+$detailCache = @{}
+$detailFailed = @{}
 $script:cpuList = $null
 $rows = [System.Collections.Generic.List[object]]::new()
 function Add-Row([System.Collections.IDictionary]$HostInfo, [string]$Type, [System.Collections.IDictionary]$Data, $Lookup) {
     $o = [ordered]@{}
     foreach ($kv in $HostInfo.GetEnumerator()) { $o[$kv.Key] = $kv.Value }
     $o.Component = $Type
-    foreach ($k in 'Name', 'Detail', 'Driver', 'VID', 'DID', 'SVID', 'SSID', 'Status', 'Message') { $o[$k] = '' }
+    foreach ($k in 'Name', 'Detail', 'Driver', 'DriverVersion', 'Firmware', 'VID', 'DID', 'SVID', 'SSID', 'Status', 'Message') { $o[$k] = '' }
     foreach ($kv in $Data.GetEnumerator()) { $o[$kv.Key] = $kv.Value }
     $rows.Add([pscustomobject]@{ Row = $o; Lookup = $Lookup })
 }
@@ -653,6 +867,7 @@ try {
             }
             # --- PCI devices ----------------------------------------------------------------
             $esxcli = Get-EsxCli -VMHost $esx -Server $vi -V2
+            $hostCache = @{}   # driver versions and FC firmware of this host
             $doVsan = 'Vsan' -in $Component -and ($VsanCheck -eq 'Always' -or ($VsanCheck -eq 'Auto' -and $(
                         $c = "$($esx.Parent)"
                         if (-not $vsanClusters.ContainsKey($c)) { $vsanClusters[$c] = [bool](Get-Cluster -Server $vi -Name $c -ErrorAction SilentlyContinue).VsanEnabled }
@@ -662,6 +877,8 @@ try {
                 foreach ($d in $devices) {
                     $ids = [ordered]@{ VID = Format-PciId $d.VendorID; DID = Format-PciId $d.DeviceID; SVID = Format-PciId $d.SubVendorID; SSID = Format-PciId $d.SubDeviceID }
                     $data = @{ Name = "$($d.VendorName) $($d.DeviceName)".Trim(); Detail = "$($d.Address) $($d.DeviceClassName)"; Driver = "$($d.ModuleName)" }
+                    if ($d.VMkernelName) { $data.Detail += " ($($d.VMkernelName))" }
+                    if (-not $SkipDriverCheck) { $df = Get-DeviceDriverFirmware $esxcli $d $hostCache; $data.DriverVersion = $df.DriverVersion; $data.Firmware = $df.Firmware }
                     foreach ($kv in $ids.GetEnumerator()) { $data[$kv.Key] = $kv.Value }
                     $virtual = $ids.VID -eq '15ad'
                     if ($virtual) { $data.Status = 'NotApplicable'; $data.Message = 'VMware virtual device: not in the Compatibility Guide' }
@@ -686,6 +903,7 @@ try {
                     $model = "$($disk.Model)".Trim()
                     $sizeGb = [math]::Round([double]"$($disk.Size)" / 1024)
                     $data = @{ Name = "$("$($disk.Vendor)".Trim()) $model".Trim(); Detail = "$($disk.Device), $sizeGb GB, $(if ($isSsd) { 'SSD' } else { 'HDD' })" }
+                    if (-not $SkipDriverCheck) { $data.Firmware = "$($disk.Revision)".Trim() }
                     $virtual = "$($disk.Vendor) $model" -match 'VMware|Virtual'
                     if ($virtual) { $data.Status = 'NotApplicable'; $data.Message = 'Virtual disk: not in the Compatibility Guide' }
                     $l = if ($virtual -or $SkipHclLookup) { $null } else { Find-VsanDisk $(if ($isSsd) { 'ssd' } else { 'hdd' }) $model }
@@ -714,9 +932,11 @@ if ($hasRange) {
     Write-Host "Releases checked: $(if ($rangeReleases) { $rangeReleases -join ', ' } else { 'none' })" -ForegroundColor Cyan
 }
 
+$driverComponents = 'PCI', 'vSAN controller', 'vSAN NVMe', 'vSAN disk'
+if (-not $SkipDriverCheck -and -not $SkipHclLookup) { Write-Host 'Comparing drivers and firmware with the Compatibility Guide detail pages ...' -ForegroundColor Cyan }
 $report = @(foreach ($r in $rows) {
         $o = $r.Row; $l = $r.Lookup
-        foreach ($k in 'HclProgram', 'HclMatch', 'HclBrand', 'HclModel', 'ReleasesInRange', 'MissingReleases', 'SupportedReleases', 'CompatibilityGuideUrl') { $o[$k] = '' }
+        foreach ($k in 'HclProgram', 'HclMatch', 'HclBrand', 'HclModel', 'ReleasesInRange', 'MissingReleases', 'SupportedReleases', 'DriverStatus', 'DriverCheck', 'FirmwareStatus', 'FirmwareCheck', 'CompatibilityGuideUrl') { $o[$k] = '' }
         $msg = $o.Message; $o.Remove('Message')
         if (-not $o.Status) {
             if (-not $l) { $o.Status = 'NotChecked' }
@@ -735,6 +955,13 @@ $report = @(foreach ($r in $rows) {
                         $o.ReleasesInRange = $inRange -join ', '; $o.MissingReleases = $missing -join ', '
                         $o.Status = if (-not $inRange) { 'NotSupported' } elseif ($missing) { 'Partial' } else { 'Supported' }
                     }
+                    # Driver and firmware: for the releases in the range that the device is listed for,
+                    # without a range for the release the host runs now.
+                    if (-not $SkipDriverCheck -and $o.Component -in $driverComponents) {
+                        $targets = if ($hasRange) { $inRange } else { @(Get-ReleaseLabel (ConvertTo-EsxiVersion $o.EsxiVersion)) }
+                        $check = Get-DriverFirmwareCheck $l $targets $o.Driver $o.DriverVersion $o.Firmware
+                        foreach ($kv in $check.GetEnumerator()) { $o[$kv.Key] = $kv.Value }
+                    }
                 }
             }
         }
@@ -745,6 +972,12 @@ $report = @(foreach ($r in $rows) {
 # Summary: rows per component type and status.
 Write-Host "$($report.Count) rows, $(@($report | Select-Object -ExpandProperty VMHost -Unique).Count) host(s), $($hclCache.Count) Compatibility Guide lookup(s)." -ForegroundColor Cyan
 foreach ($g in ($report | Group-Object Component, Status | Sort-Object Name)) { Write-Host ("  {0,-30} {1}" -f $g.Name, $g.Count) }
+$dfRows = @($report | Where-Object { $_.DriverStatus -or $_.FirmwareStatus })
+if ($dfRows) {
+    Write-Host "Driver and firmware ($($dfRows.Count) rows):" -ForegroundColor Cyan
+    foreach ($g in ($dfRows | Where-Object DriverStatus | Group-Object DriverStatus | Sort-Object Name)) { Write-Host ("  {0,-30} {1}" -f "Driver $($g.Name)", $g.Count) }
+    foreach ($g in ($dfRows | Where-Object FirmwareStatus | Group-Object FirmwareStatus | Sort-Object Name)) { Write-Host ("  {0,-30} {1}" -f "Firmware $($g.Name)", $g.Count) }
+}
 
 if ($CsvPath -and $report.Count) {
     $csvDir = Split-Path -Path $CsvPath -Parent
