@@ -72,18 +72,18 @@ It then opens the guide's detail page of the matching entry and compares them wi
 | DriverStatus | Meaning |
 |---|---|
 | `OK` | The running driver is listed for every release checked |
-| `Update` | For at least one release another driver version is needed. `DriverCheck` says which, per release: `ESXi 9.0: needs icen 2.3.3.0-1OEM; ESXi 9.1: OK`. When several are listed, it shows the newest |
+| `Update` | For at least one release another driver version is needed. `DriverCheck` says which, per release: `ESXi 9.0: needs icen 2.3.3.0-1OEM; ESXi 9.1: OK`. It shows the newest async (vendor) driver and, when the guide lists one, the newest inbox driver (`-vmw`, ships with ESXi) separately. When the running driver is newer than anything listed for a release, it says so: that version is not certified for that release, even if it looks like an upgrade |
 | `Unknown` | The host did not report its driver version, or the guide page could not be read |
 | `NoData` | The guide lists no driver for that release |
 
 | FirmwareStatus | Meaning |
 |---|---|
-| `OK` | The running firmware is one the guide lists, or at least the listed minimum (vSAN disks) |
+| `OK` | The running firmware is one the guide lists, or at least the listed minimum (vSAN disks). Disk revisions such as `GXA5` are compared within one family only: same length and same leading letters, then the rest (`GXA6` ≥ `GXA5`, `GXA4` < `GXA5`). A revision of another family (`HPD2`, an HPE OEM firmware) is not compared |
 | `Check` | The running firmware is not one the guide lists. Compare on the guide page: vendors often write firmware versions differently than ESXi reports them (Intel NICs report the NVM version, the guide may list the package version) |
 | `Unknown` | ESXi does not report the firmware. This is normal for RAID and SAS controllers: check it in the server's management (iDRAC, iLO, XClarity) |
 | `NoData` | The guide lists no firmware for that release |
 
-Driver and firmware never change `Status`: a device can be `Supported` on 9.0 and still need another driver. Upgrading from 8.0 to 9.x almost always gives `Update`, because 9.x has its own driver builds; `DriverCheck` then tells you which driver to put in your image (vLCM). The comparison is a prefix match: the host reports the full build (`2.5.2.0-1OEM.800.1.0.20613240`), the guide the version (`2.5.2.0-1OEM`).
+Driver and firmware never change `Status`: a device can be `Supported` on 9.0 and still need another driver. The comparison is a prefix match: the host reports the full build (`2.5.2.0-1OEM.800.1.0.20613240`), the guide a version. **IO Devices lists versions without a build** (`2.9.2.0-1OEM` for ESXi 9.0), so the `.800` build an 8.0 host runs counts as that version and shows `OK` for 9.x: the guide certifies the version, not a build. **The vSAN I/O Controller list includes the build** (`90.4902.0.103-1OEM.900`), so there only that build matches and an 8.0 host gets `Update`. Where `DriverCheck` says `Update`, it tells you which driver to put in your image (vLCM).
 
 `-SkipDriverCheck` turns all of this off (no extra esxcli calls, no detail pages).
 
@@ -213,7 +213,7 @@ The script uses the same web API as the guide's own web pages (`POST /compguide/
 - **CPU**: the script reads the CPUID signature (leaf 1, for example `0x000606A6`) from the host and finds the CPU series that list exactly that signature. Several series can share one signature (Xeon Gold 6300 and Platinum 8300 are both Ice Lake); the script then narrows down on the model number (`Gold 6338` → series with `6300`). If that fails, all matching series are kept and `Message` says so.
 - **Server**: the guide lists a server once per CPU series. The script searches the model name, keeps only entries with exactly that model name, and of those only the ones with the host's CPU series. So a server can be `Partial` when the model is supported on 9.1 with one CPU generation but not with yours.
 - **vSAN disks** are searched by model number. ESXi often reports an OEM suffix (`MZILT960HBHQ0D3` where the guide says `MZILT960HBHQ-00007`); when the full number finds nothing, the script searches again without the last 3 characters and `HclMatch` is `Keyword`.
-- **Driver and firmware** come from the entry's detail page (`POST /compguide/programs/viewDetails?programId=<section>&id=<entry>`), which lists per release the driver name and version and the firmware (IO Devices), the driver and firmware (vSAN I/O Controller) or the minimum firmware (vSAN SSD/HDD). When a device matches several entries, the script uses the first 5 together. IO entries list every driver of a card (an Intel E810 has `icen` and `irdman`); the script compares only the rows of the driver the host uses. The detail page returns at most 100 rows; for devices with a very long history, the oldest releases may be missing (`NoData`).
+- **Driver and firmware** come from the entry's detail page (`POST /compguide/programs/viewDetails?programId=<section>&id=<entry>`), which lists per release the driver name and version and the firmware (IO Devices), the driver and firmware (vSAN I/O Controller) or the minimum firmware (vSAN SSD/HDD). When a device matches several entries, the script uses the first 5 together. IO entries list every driver of a card (an Intel E810 has `icen` and `irdman`); the script compares only the rows of the driver the host uses. The script reads every row the detail page returns, for all releases, in one call.
 - **Cache**: every unique component is looked up once per run, however many hosts have it, so a large cluster costs few requests.
 
 ## Not checked
@@ -266,4 +266,4 @@ This script uses the shared **environment config**: one JSON file per environmen
 
 ## History
 
-Version 1.0 was `Report-PCIDevices.ps1` and checked NICs and FC HBAs only. Version 2.0 adds the environment config, the version range, server, CPU, storage controller and vSAN checks, and fixes the subdevice ID filter (1.0 sent the subvendor ID under a key the guide ignores), the IDs (now always 4 hex digits), devices without a guide entry, the CSV that was named `.txt` and written once per cluster, and looks up each unique component only once. Version 2.1 adds the driver and firmware check.
+Version 1.0 was `Report-PCIDevices.ps1` and checked NICs and FC HBAs only. Version 2.0 adds the environment config, the version range, server, CPU, storage controller and vSAN checks, and fixes the subdevice ID filter (1.0 sent the subvendor ID under a key the guide ignores), the IDs (now always 4 hex digits), devices without a guide entry, the CSV that was named `.txt` and written once per cluster, and looks up each unique component only once. Version 2.1 adds the driver and firmware check. Version 2.2 shows inbox drivers separately and compares vSAN disk revisions against the minimum.
