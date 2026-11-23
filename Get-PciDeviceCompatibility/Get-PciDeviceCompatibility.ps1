@@ -346,6 +346,7 @@ try {
     foreach ($esx in @($esxHosts | Sort-Object Name)) {
         $hostInfo = [ordered]@{ Cluster = "$($esx.Parent)"; VMHost = $esx.Name; EsxiVersion = "$($esx.Version) ($($esx.Build))" }
         if ("$($esx.ConnectionState)" -notin 'Connected', 'Maintenance') {
+            Write-Warning "$($esx.Name) skipped: host is $($esx.ConnectionState) in vCenter"
             $rows.Add([ordered]@{ Host = $hostInfo; Status = 'Skipped'; Message = "Host is $($esx.ConnectionState)" }); continue
         }
         Write-Host "  $($esx.Name)" -ForegroundColor Green
