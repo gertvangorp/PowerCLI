@@ -28,7 +28,8 @@ Copy-Item .\config\environment.config.sample.json .\config\customer1.config.json
   "PrimaryDatastore":   { },
   "LunMultipathReport": { "VMHost": ["..."], "CsvPath": "..." },
   "TpmRecoveryKey":     { "Cluster": ["..."] },
-  "EsxiNtpServer":      { "VMHost": ["..."], "NtpServer": ["..."] }
+  "EsxiNtpServer":      { "VMHost": ["..."], "NtpServer": ["..."] },
+  "PciDeviceCompatibility": { "Cluster": ["..."], "MinEsxiVersion": "9.0", "MaxEsxiVersion": "9.1.1", "DeviceClass": ["..."], "CsvPath": "..." }
 }
 ```
 
@@ -40,6 +41,7 @@ Each script reads the top-level keys, then `Common`, then its own section; a lat
 | `LunMultipathReport` | [Get-LunMultipathReport](../Get-LunMultipathReport/) |
 | `TpmRecoveryKey` | [Get-TpmRecoveryKey](../Get-TpmRecoveryKey/) |
 | `EsxiNtpServer` | [Set-EsxiNtpServer](../Set-EsxiNtpServer/) |
+| `PciDeviceCompatibility` | [Get-PciDeviceCompatibility](../Get-PciDeviceCompatibility/) |
 
 A new script adds its own section here and in the sample.
 
@@ -49,13 +51,13 @@ A new script adds its own section here and in the sample.
 |---|---|---|
 | `Environment` | all | Name shown in the console and used for `{env}` in paths. Default: the file name |
 | `SddcManager` | all | SDDC Manager FQDN (a list is allowed; these scripts take the first) |
-| `VCenter` | LUN, TPM | vCenter FQDN |
+| `VCenter` | LUN, TPM, PCI | vCenter FQDN |
 | `SddcUser` / `SddcCredentialFile` | all | SDDC Manager account |
-| `VcUser` / `VcCredentialFile` | LUN, TPM | vCenter account |
+| `VcUser` / `VcCredentialFile` | LUN, TPM, PCI | vCenter account |
 | `EsxiUser` / `EsxiCredentialFile` | NTP | ESXi account (root) |
-| `UseSddcCredentials` | LUN, TPM, NTP | Read vCenter / ESXi passwords from the SDDC Manager vault |
+| `UseSddcCredentials` | LUN, TPM, NTP, PCI | Read vCenter / ESXi passwords from the SDDC Manager vault |
 | `SkipCertificateCheck` | all | **Lab only.** Skip TLS validation of SDDC Manager |
-| `VMHost`, `NtpServer`, `Cluster`, `CsvPath` | per script | See the script's README |
+| `VMHost`, `NtpServer`, `Cluster`, `CsvPath`, `MinEsxiVersion`, `MaxEsxiVersion`, `DeviceClass` | per script | See the script's README |
 
 Paths can use `{date}` (yyyyMMdd-HHmm), `{env}` (environment name) and `%VARIABLES%`, for example `%USERPROFILE%\Reports\{env}-lun-report-{date}.csv`.
 
