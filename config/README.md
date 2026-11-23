@@ -29,7 +29,7 @@ Copy-Item .\config\environment.config.sample.json .\config\customer1.config.json
   "LunMultipathReport": { "VMHost": ["..."], "CsvPath": "..." },
   "TpmRecoveryKey":     { "Cluster": ["..."] },
   "EsxiNtpServer":      { "VMHost": ["..."], "NtpServer": ["..."] },
-  "HardwareCompatibility": { "Cluster": ["..."], "MinEsxiVersion": "9.0", "MaxEsxiVersion": "9.1.1", "Component": ["..."], "VsanCheck": "Auto", "CsvPath": "..." }
+  "HardwareCompatibility": { "Cluster": ["..."], "MinEsxiVersion": "9.0", "MaxEsxiVersion": "9.1.1", "Component": ["..."], "VsanCheck": "Auto", "CsvPath": "...", "HtmlPath": "..." }
 }
 ```
 
@@ -57,7 +57,7 @@ A new script adds its own section here and in the sample.
 | `EsxiUser` / `EsxiCredentialFile` | NTP | ESXi account (root) |
 | `UseSddcCredentials` | LUN, TPM, NTP, PCI | Read vCenter / ESXi passwords from the SDDC Manager vault |
 | `SkipCertificateCheck` | all | **Lab only.** Skip TLS validation of SDDC Manager |
-| `VMHost`, `NtpServer`, `Cluster`, `CsvPath`, `MinEsxiVersion`, `MaxEsxiVersion`, `Component`, `VsanCheck`, `DeviceClass` | per script | See the script's README |
+| `VMHost`, `NtpServer`, `Cluster`, `CsvPath`, `MinEsxiVersion`, `MaxEsxiVersion`, `Component`, `VsanCheck`, `DeviceClass`, `HtmlPath` | per script | See the script's README |
 
 Paths can use `{date}` (yyyyMMdd-HHmm), `{env}` (environment name) and `%VARIABLES%`, for example `%USERPROFILE%\Reports\{env}-lun-report-{date}.csv`.
 

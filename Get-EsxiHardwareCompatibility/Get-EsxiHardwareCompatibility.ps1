@@ -42,7 +42,8 @@
 
     Every unique component is looked up once and the result is reused for every host. At the end
     the script prints a summary per component type and status. Results go to the pipeline; with
-    -CsvPath also to CSV (with the list separator of your Windows region, for Excel).
+    -CsvPath also to CSV (with the list separator of your Windows region, for Excel), with
+    -HtmlPath also to a self-contained HTML report.
 
     The script only reads. It changes nothing in vCenter or on the hosts. The Compatibility Guide
     API is not an official, documented API: Broadcom can change it. The guide stays the source of
@@ -85,6 +86,11 @@
     Optional CSV export path; the folder is created when needed. "{date}" is replaced with
     yyyyMMdd-HHmm, "{env}" with the environment name. Config: CsvPath.
 
+.PARAMETER HtmlPath
+    Optional HTML report: one self-contained file with a summary, a component/status matrix and one
+    section per host, with status colours, links to the guide and a filter box. The folder is
+    created when needed. "{date}" and "{env}" as for -CsvPath. Config: HtmlPath.
+
 .PARAMETER Credential
     vCenter account. Config: VcUser (prompt) or VcCredentialFile (Export-Clixml).
 
@@ -117,6 +123,10 @@
     .\Get-EsxiHardwareCompatibility.ps1 -Environment lab1 -UseSddcCredentials -CsvPath '%USERPROFILE%\Reports\{env}-hardware-{date}.csv'
 
 .EXAMPLE
+    # HTML report to open in a browser or mail around
+    .\Get-EsxiHardwareCompatibility.ps1 -Environment lab1 -MinEsxiVersion 9.0 -MaxEsxiVersion 9.1.1 -HtmlPath '%USERPROFILE%\Reports\{env}-hardware-{date}.html'
+
+.EXAMPLE
     # Only what is not fully supported, one line per unique component
     $r = .\Get-EsxiHardwareCompatibility.ps1 -Environment lab1 -MinEsxiVersion 9.0 -MaxEsxiVersion 9.1.1
     $r | Where-Object Status -ne 'Supported' | Sort-Object Component, Name, VID, DID, SVID, SSID -Unique |
@@ -138,7 +148,7 @@
     Version history
     2.0  2026-11-23  Rewrite (was Report-PCIDevices.ps1): environment config, standard header, ESXi
                      version range with Status, server/CPU/vSAN checks, storage controllers by default,
-                     subdevice ID filter fixed (maxSsid), IDs zero-padded, lookup cache, one CSV export.
+                     subdevice ID filter fixed (maxSsid), IDs zero-padded, lookup cache, CSV and HTML report.
     1.0  2025-10-17  First version (Report-PCIDevices.ps1): NICs and FC HBAs only.
 
 .LINK
@@ -157,6 +167,7 @@ param(
     [string]$VsanCheck = 'Auto',
     [switch]$SkipHclLookup,
     [string]$CsvPath,
+    [string]$HtmlPath,
     [pscredential]$Credential,
     [string]$Environment,
     [string]$ConfigFile,
@@ -173,7 +184,7 @@ $isCore = $PSVersionTable.PSEdition -eq 'Core'
 
 # Settings this script reads from the environment config (key = parameter name).
 $ConfigSection = 'HardwareCompatibility'
-$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; MinEsxiVersion = 'string'; MaxEsxiVersion = 'string'; Component = 'list'; DeviceClass = 'list'; VsanCheck = 'string'; SkipHclLookup = 'switch'; CsvPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
+$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; MinEsxiVersion = 'string'; MaxEsxiVersion = 'string'; Component = 'list'; DeviceClass = 'list'; VsanCheck = 'string'; SkipHclLookup = 'switch'; CsvPath = 'string'; HtmlPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
 $ConfigCredentials = [ordered]@{ Vc = 'Credential'; Sddc = 'SddcCredential' }
 
 #region Environment config file (shared: identical in every script, checked by CI) -------------
@@ -235,6 +246,7 @@ function Expand-PathTemplate([string]$Path) {
 #endregion
 if (-not $VCenter) { throw 'No vCenter given. Use -VCenter or "VCenter" in the config file.' }
 $CsvPath = Expand-PathTemplate $CsvPath
+$HtmlPath = Expand-PathTemplate $HtmlPath
 
 #region SDDC Manager vault functions (shared: identical in every script, checked by CI) -------
 function Invoke-SddcApi {
@@ -289,6 +301,9 @@ if ($UseSddcCredentials -and -not $Credential) {
 if (-not $Credential) { $Credential = Get-Credential -Message "vCenter account for $VCenter" }
 
 #region Compatibility Guide ------------------------------------------------------------------
+# Warnings also go into the HTML report.
+$script:notes = [System.Collections.Generic.List[string]]::new()
+function Add-Note([string]$Text) { Write-Warning $Text; $script:notes.Add($Text) }
 # The guide's web front end calls these endpoints; they are not an official, documented API.
 $BcgBase = 'https://compatibilityguide.broadcom.com'
 
@@ -347,7 +362,7 @@ function Get-Cached([string]$Key, [scriptblock]$Find) {
     if ($hclCache.ContainsKey($Key)) { return $hclCache[$Key] }
     $lookup = New-Lookup ($Key -split '\|')[0]
     try { & $Find $lookup }
-    catch { $lookup.Error = $_.Exception.Message; Write-Warning "Compatibility Guide lookup $Key failed: $($lookup.Error)" }
+    catch { $lookup.Error = $_.Exception.Message; Add-Note "Compatibility Guide lookup $Key failed: $($lookup.Error)" }
     $hclCache[$Key] = $lookup
     $lookup
 }
@@ -445,6 +460,111 @@ function Test-InRange([string]$Release) {
 }
 #endregion
 
+#region HTML report -----------------------------------------------------------------------------
+function ConvertTo-HtmlText($Value) { [System.Net.WebUtility]::HtmlEncode("$Value") }
+function Export-HtmlReport($Report, [string]$Path, [System.Collections.IDictionary]$Info, [string[]]$Notes) {
+    # One self-contained file (no external CSS, JS or fonts), so it can be mailed or archived as is.
+    $order = @('NotSupported', 'NotFound', 'LookupFailed', 'Failed', 'Partial', 'Skipped', 'NotChecked', 'Found', 'Supported', 'NotApplicable')
+    $cls = @{ Supported = 'ok'; Found = 'ok'; Partial = 'warn'; NotSupported = 'bad'; NotFound = 'bad'; LookupFailed = 'bad'; Failed = 'bad'; Skipped = 'muted'; NotChecked = 'muted'; NotApplicable = 'muted' }
+    $e = { param($v) ConvertTo-HtmlText $v }
+    $sb = [System.Text.StringBuilder]::new()
+    $title = "ESXi hardware compatibility - $($Info.Environment)"
+    [void]$sb.Append(@"
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$(& $e $title)</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#5d6675;--line:#e2e5ea;--ok:#1a7f45;--okbg:#e3f4ea;--warn:#946200;--warnbg:#fdf1d6;--bad:#b42318;--badbg:#fde7e5;--mutedbg:#eef0f3;--accent:#1f5fbf}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1c2027;--text:#e6e8ec;--muted:#9aa3b2;--line:#2c323c;--ok:#5fd08f;--okbg:#173525;--warn:#f0c058;--warnbg:#3a2f12;--bad:#ff8a80;--badbg:#3d1c1a;--mutedbg:#262b33;--accent:#7fb0ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif}
+main{max-width:1400px;margin:0 auto;padding:24px 16px 48px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px}
+.meta{color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 18px;margin-bottom:16px}.meta b{color:var(--text);font-weight:600}
+.notes{background:var(--warnbg);color:var(--warn);border-radius:8px;padding:10px 14px;margin:12px 0}.notes li{margin:2px 0}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;cursor:pointer;user-select:none}
+.card .n{font-size:26px;font-weight:700}.card .l{color:var(--muted)}.card.off{opacity:.35}
+.card.ok .n{color:var(--ok)}.card.warn .n{color:var(--warn)}.card.bad .n{color:var(--bad)}.card.muted .n{color:var(--muted)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);background:var(--mutedbg)}
+tr:last-child td{border-bottom:0}.num{text-align:center;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.badge.ok{background:var(--okbg);color:var(--ok)}.badge.warn{background:var(--warnbg);color:var(--warn)}.badge.bad{background:var(--badbg);color:var(--bad)}.badge.muted{background:var(--mutedbg);color:var(--muted)}
+.ids{font-family:Consolas,ui-monospace,monospace;font-size:12px;white-space:nowrap}.small{color:var(--muted);font-size:12px}
+a{color:var(--accent)}details{margin:10px 0}summary{cursor:pointer;padding:10px 14px;background:var(--card);border:1px solid var(--line);border-radius:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+details[open] summary{border-radius:10px 10px 0 0;border-bottom:0}details table{border-radius:0 0 10px 10px}summary .h{font-weight:600}summary .s{color:var(--muted)}
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}.bar input{flex:1;min-width:220px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
+.bar button{padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);cursor:pointer}
+.scroll{overflow-x:auto}footer{color:var(--muted);font-size:12px;margin-top:32px}
+@media print{.bar,.cards{display:none}details{break-inside:avoid}}
+</style></head><body><main>
+<h1>ESXi hardware compatibility</h1>
+<div class="meta">
+"@)
+    foreach ($k in $Info.Keys) { if ($k -ne 'Environment' -or $Info[$k]) { [void]$sb.Append("<span>$(& $e $k): <b>$(& $e $Info[$k])</b></span>") } }
+    [void]$sb.Append('</div>')
+    if ($Notes) { [void]$sb.Append('<ul class="notes">'); foreach ($n in $Notes) { [void]$sb.Append("<li>$(& $e $n)</li>") }; [void]$sb.Append('</ul>') }
+
+    # Summary cards (click to show/hide a status) and a component x status matrix.
+    $statuses = @($order | Where-Object { $_ -in @($Report.Status) })
+    [void]$sb.Append('<h2>Summary</h2><div class="cards">')
+    foreach ($s in $statuses) {
+        $n = @($Report | Where-Object Status -eq $s).Count
+        [void]$sb.Append("<div class=`"card $($cls[$s])`" data-status=`"$s`" title=`"Click to show or hide`"><div class=`"n`">$n</div><div class=`"l`">$s</div></div>")
+    }
+    [void]$sb.Append('</div><h2>Per component</h2><div class="scroll"><table><tr><th>Component</th>')
+    foreach ($s in $statuses) { [void]$sb.Append("<th class=`"num`">$s</th>") }
+    [void]$sb.Append('</tr>')
+    foreach ($c in @($Report.Component | Select-Object -Unique)) {
+        [void]$sb.Append("<tr><td>$(& $e $c)</td>")
+        foreach ($s in $statuses) {
+            $n = @($Report | Where-Object { $_.Component -eq $c -and $_.Status -eq $s }).Count
+            [void]$sb.Append($(if ($n) { "<td class=`"num`"><span class=`"badge $($cls[$s])`">$n</span></td>" } else { '<td class="num small">-</td>' }))
+        }
+        [void]$sb.Append('</tr>')
+    }
+    [void]$sb.Append('</table></div>')
+
+    # One collapsible section per host; hosts with problems are open.
+    [void]$sb.Append('<h2>Hosts</h2><div class="bar"><input id="q" type="search" placeholder="Filter: host, device, ID, driver, release ..."><button id="all">Expand all</button><button id="none">Collapse all</button></div>')
+    foreach ($h in ($Report | Group-Object VMHost | Sort-Object Name)) {
+        $rowsH = @($h.Group)
+        $worst = @($order | Where-Object { $_ -in @($rowsH.Status) })[0]
+        $open = if ($cls[$worst] -in 'bad', 'warn') { ' open' } else { '' }
+        $f = $rowsH[0]
+        [void]$sb.Append("<details$open><summary><span class=`"h`">$(& $e $h.Name)</span><span class=`"s`">$(& $e $f.Cluster) &middot; ESXi $(& $e $f.EsxiVersion)</span><span class=`"badge $($cls[$worst])`">$worst</span></summary>")
+        [void]$sb.Append('<div class="scroll"><table><tr><th>Component</th><th>Name</th><th>Detail</th><th>IDs / driver</th><th>Status</th><th>In range</th><th>Missing</th><th>Guide</th></tr>')
+        foreach ($r in $rowsH) {
+            $ids = if ($r.VID) { "<span class=`"ids`">$($r.VID):$($r.DID):$($r.SVID):$($r.SSID)</span>" } else { '' }
+            if ($r.Driver) { $ids += "<div class=`"small`">$(& $e $r.Driver)</div>" }
+            $guide = if ($r.CompatibilityGuideUrl) { "<a href=`"$(& $e $r.CompatibilityGuideUrl)`" target=`"_blank`" rel=`"noopener`">open</a>" } else { '' }
+            if ($r.HclModel) { $guide += "<div class=`"small`">$(& $e $r.HclModel)</div>" }
+            $msg = if ($r.Message) { "<div class=`"small`">$(& $e $r.Message)</div>" } else { '' }
+            $search = (& $e ("$($r.VMHost) $($r.Component) $($r.Name) $($r.Detail) $($r.Driver) $($r.VID) $($r.DID) $($r.SVID) $($r.SSID) $($r.HclModel) $($r.Status) $($r.SupportedReleases)").ToLower())
+            [void]$sb.Append("<tr data-status=`"$($r.Status)`" data-search=`"$search`"><td>$(& $e $r.Component)</td><td>$(& $e $r.Name)$msg</td><td class=`"small`">$(& $e $r.Detail)</td><td>$ids</td><td><span class=`"badge $($cls[$r.Status])`">$(& $e $r.Status)</span></td><td class=`"small`">$(& $e $r.ReleasesInRange)</td><td class=`"small`">$(& $e $r.MissingReleases)</td><td>$guide</td></tr>")
+        }
+        [void]$sb.Append('</table></div></details>')
+    }
+    [void]$sb.Append(@"
+<footer>Generated by Get-EsxiHardwareCompatibility.ps1 (https://github.com/gertvangorp/PowerCLI) from the Broadcom Compatibility Guide.
+The guide is the source of truth: check driver and firmware versions on the linked pages before an upgrade.
+Releases checked are the releases in the range that the guide lists for at least one component in this report.</footer>
+</main><script>
+(function(){var off={},q=document.getElementById('q');
+function apply(){var t=(q.value||'').toLowerCase();document.querySelectorAll('tr[data-search]').forEach(function(r){r.style.display=(!off[r.dataset.status]&&(!t||r.dataset.search.indexOf(t)>=0))?'':'none'});
+document.querySelectorAll('details').forEach(function(d){var v=d.querySelectorAll('tr[data-search]:not([style*="none"])').length;d.style.display=v?'':'none';if(t&&v)d.open=true})}
+document.querySelectorAll('.card').forEach(function(c){c.addEventListener('click',function(){var s=c.dataset.status;off[s]=!off[s];c.classList.toggle('off',off[s]);apply()})});
+q.addEventListener('input',apply);
+document.getElementById('all').onclick=function(){document.querySelectorAll('details').forEach(function(d){d.open=true})};
+document.getElementById('none').onclick=function(){document.querySelectorAll('details').forEach(function(d){d.open=false})};})();
+</script></body></html>
+"@)
+    $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $dir = Split-Path -Path $Path -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [IO.File]::WriteAllText($Path, $sb.ToString(), [Text.UTF8Encoding]::new($false))
+}
+#endregion
+
 $minVer = $null; $maxVer = $null
 if ($MinEsxiVersion) { $minVer = ConvertTo-EsxiVersion $MinEsxiVersion; if (-not $minVer) { throw "MinEsxiVersion '$MinEsxiVersion' is not a version (use for example 9.0)." } }
 if ($MaxEsxiVersion) { $maxVer = ConvertTo-EsxiVersion $MaxEsxiVersion; if (-not $maxVer) { throw "MaxEsxiVersion '$MaxEsxiVersion' is not a version (use for example 9.1.1)." } }
@@ -478,7 +598,7 @@ try {
     foreach ($esx in @($esxHosts | Sort-Object Name)) {
         $hostInfo = [ordered]@{ Cluster = "$($esx.Parent)"; VMHost = $esx.Name; EsxiVersion = "$($esx.Version) ($($esx.Build))" }
         if ("$($esx.ConnectionState)" -notin 'Connected', 'Maintenance') {
-            Write-Warning "$($esx.Name) skipped: host is $($esx.ConnectionState) in vCenter"
+            Add-Note "$($esx.Name) skipped: host is $($esx.ConnectionState) in vCenter"
             Add-Row $hostInfo 'Host' @{ Name = "$($esx.Manufacturer) $($esx.Model)"; Status = 'Skipped'; Message = "Host is $($esx.ConnectionState)" } $null
             continue
         }
@@ -551,7 +671,7 @@ try {
             }
         }
         catch {
-            Write-Warning "$($esx.Name) : $($_.Exception.Message)"
+            Add-Note "$($esx.Name) : $($_.Exception.Message)"
             Add-Row $hostInfo 'Host' @{ Name = "$($esx.Manufacturer) $($esx.Model)"; Status = 'Failed'; Message = $_.Exception.Message } $null
         }
     }
@@ -566,7 +686,7 @@ if ($hasRange) {
     $rangeVersions = @($hclCache.Values.Releases | Where-Object { Test-InRange $_ } | ForEach-Object { ConvertTo-EsxiVersion $_ } | Sort-Object -Unique)
     $rangeReleases = @($rangeVersions | ForEach-Object { Get-ReleaseLabel $_ })
     foreach ($edge in @($minVer, $maxVer)) {
-        if ($edge -and $hclCache.Count -and $edge -notin $rangeVersions) { Write-Warning "Nothing in this report is listed for $(Get-ReleaseLabel $edge) in the Compatibility Guide, so that release could not be checked. Is the version right, or is it not in the guide yet?" }
+        if ($edge -and $hclCache.Count -and $edge -notin $rangeVersions) { Add-Note "Nothing in this report is listed for $(Get-ReleaseLabel $edge) in the Compatibility Guide, so that release could not be checked. Is the version right, or is it not in the guide yet?" }
     }
     Write-Host "Releases checked: $(if ($rangeReleases) { $rangeReleases -join ', ' } else { 'none' })" -ForegroundColor Cyan
 }
@@ -608,5 +728,18 @@ if ($CsvPath -and $report.Count) {
     if ($csvDir -and -not (Test-Path -LiteralPath $csvDir)) { New-Item -ItemType Directory -Path $csvDir -Force | Out-Null }
     $report | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8 -UseCulture -Force
     Write-Host "CSV: $CsvPath" -ForegroundColor Green
+}
+if ($HtmlPath -and $report.Count) {
+    $info = [ordered]@{
+        Environment      = $EnvironmentName
+        vCenter          = $VCenter
+        Generated        = (Get-Date -Format 'yyyy-MM-dd HH:mm')
+        'Target range'   = if ($hasRange) { "$(if ($minVer) { Get-ReleaseLabel $minVer } else { 'any' }) to $(if ($maxVer) { Get-ReleaseLabel $maxVer } else { 'any' })" } else { 'none (all releases listed)' }
+        'Releases checked' = if ($hasRange) { if ($rangeReleases) { $rangeReleases -join ', ' } else { 'none' } } else { '-' }
+        Hosts            = @($report | Select-Object -ExpandProperty VMHost -Unique).Count
+        Script           = "version $script:ScriptVersion"
+    }
+    Export-HtmlReport $report $HtmlPath $info @($script:notes)
+    Write-Host "HTML: $HtmlPath" -ForegroundColor Green
 }
 $report

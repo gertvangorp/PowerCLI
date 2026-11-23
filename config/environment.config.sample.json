@@ -31,6 +31,7 @@
     "MaxEsxiVersion": "9.1.1",
     "Component": ["Server", "CPU", "PCI", "Vsan"],
     "VsanCheck": "Auto",
-    "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv"
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv",
+    "HtmlPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.html"
   }
 }

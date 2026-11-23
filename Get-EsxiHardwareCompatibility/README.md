@@ -14,6 +14,7 @@ The script only reads. It changes nothing in vCenter or on the hosts. It needs i
 - [Parameters](#parameters)
 - [Usage](#usage)
 - [Output columns](#output-columns)
+- [HTML report](#html-report)
 - [How the lookups work](#how-the-lookups-work)
 - [Not checked](#not-checked)
 - [Credentials](#credentials)
@@ -76,6 +77,7 @@ Virtual hardware (nested ESXi in a lab, VMware virtual NICs and disks) is report
 | `-VsanCheck` | No | `Auto` (default): vSAN rows for hosts in vSAN clusters. `Always`: for every host. `Never`: none |
 | `-SkipHclLookup` | No | Only inventory the hardware, without querying the guide (offline, or to get the IDs quickly) |
 | `-CsvPath` | No | Also export to CSV, with the list separator of your Windows region (so Excel opens it in columns). The folder is created when needed. `{date}` becomes `yyyyMMdd-HHmm`, `{env}` the environment name |
+| `-HtmlPath` | No | Also write an HTML report (see [HTML report](#html-report)). The folder is created when needed. `{date}` and `{env}` as for `-CsvPath` |
 | `-Credential` | No | vCenter account. Config: `VcUser` / `VcCredentialFile` |
 | `-Environment` | No | Environment config name: reads `config\<name>.config.json`. Give only the name (`lab1`), not the file name |
 | `-ConfigFile` | No | Path to an environment config file |
@@ -144,6 +146,23 @@ Releases checked: ESXi 9.0, ESXi 9.1
 | `CompatibilityGuideUrl` | The guide page of the entry (or the search page when several entries match) |
 | `Message` | Why a match is uncertain, why a row is not checked, or the error |
 
+## HTML report
+
+`-HtmlPath` writes one self-contained HTML file (no external scripts, styles or fonts), so you can open it offline, mail it or attach it to a change:
+
+- the environment, vCenter, target range, releases checked and the warnings of the run;
+- summary cards per status (click a card to hide or show those rows);
+- a table of components by status;
+- one section per host with every component, a coloured status, the PCI IDs and driver, releases in range and missing, and a link to the guide page. Hosts with a problem are expanded; the others are collapsed;
+- a filter box that searches host, device name, IDs, driver, model and releases.
+
+It follows the light or dark setting of your browser and prints cleanly.
+
+```powershell
+.\Get-EsxiHardwareCompatibility.ps1 -Environment lab1 -UseSddcCredentials -MinEsxiVersion 9.0 -MaxEsxiVersion 9.1.1 `
+    -HtmlPath '%USERPROFILE%\Reports\{env}-hardware-{date}.html' -CsvPath '%USERPROFILE%\Reports\{env}-hardware-{date}.csv'
+```
+
 ## How the lookups work
 
 The script uses the same web API as the guide's own web pages (`POST /compguide/programs/viewResults`, credits to [William Lam](https://williamlam.com/2025/05/programmatically-accessing-the-broadcom-compatibility-guide-bcg.html) for documenting it). It is not an official, documented API, so Broadcom can change it; if lookups start failing with `LookupFailed` or everything becomes `NotFound`, the API has probably changed.
@@ -181,7 +200,8 @@ This script uses the shared **environment config**: one JSON file per environmen
   "MaxEsxiVersion": "9.1.1",
   "Component": ["Server", "CPU", "PCI", "Vsan"],
   "VsanCheck": "Auto",
-  "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv"
+  "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv",
+  "HtmlPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.html"
 }
 ```
 
