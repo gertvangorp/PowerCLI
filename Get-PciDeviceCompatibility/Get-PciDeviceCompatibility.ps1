@@ -418,6 +418,8 @@ Write-Host "$($report.Count) rows, $($unique.Count) unique device(s), $($hclCach
 foreach ($g in ($unique | Group-Object Status | Sort-Object Name)) { Write-Host ("  {0,-13} {1}" -f $g.Name, $g.Count) }
 
 if ($CsvPath -and $report.Count) {
+    $csvDir = Split-Path -Path $CsvPath -Parent
+    if ($csvDir -and -not (Test-Path -LiteralPath $csvDir)) { New-Item -ItemType Directory -Path $csvDir -Force | Out-Null }
     $report | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8 -UseCulture -Force
     Write-Host "CSV: $CsvPath" -ForegroundColor Green
 }
