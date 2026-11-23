@@ -24,5 +24,14 @@
   "EsxiNtpServer": {
     "VMHost": ["esx01.lab1.local", "esx02.lab1.local"],
     "NtpServer": ["0.be.pool.ntp.org", "1.be.pool.ntp.org"]
+  },
+  "HardwareCompatibility": {
+    "Cluster": [],
+    "MinEsxiVersion": "9.0",
+    "MaxEsxiVersion": "9.1.1",
+    "Component": ["Server", "CPU", "PCI", "Vsan"],
+    "VsanCheck": "Auto",
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv",
+    "HtmlPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.html"
   }
 }
