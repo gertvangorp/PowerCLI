@@ -30,7 +30,8 @@
     device, and compares them with the driver and firmware versions the guide lists for each
     release in the range (without a range: for the release the host runs now):
       DriverStatus    OK (the running driver is listed for every release), Update (another driver
-                      version is needed for at least one release; DriverCheck says which),
+                      version is needed for at least one release; DriverCheck says which, with
+                      inbox -vmw drivers that ship with ESXi shown separately),
                       Unknown (the host did not report its driver version), NoData (the guide
                       lists no driver for the release)
       FirmwareStatus  OK (the running firmware is listed, or is at least the listed minimum),
@@ -158,7 +159,7 @@
 
 .NOTES
     Name        : Get-EsxiHardwareCompatibility.ps1
-    Version     : 2.1
+    Version     : 2.2
     Date        : 2026-11-23
     Author      : Gert (https://www.v-consult.be)
     Repository  : https://github.com/gertvangorp/PowerCLI
@@ -170,6 +171,8 @@
     License     : provided as is, without warranty. Test in a lab first.
 
     Version history
+    2.2  2026-11-23  Driver check: inbox (-vmw) drivers shown separately, a running driver newer than any listed is
+                     called out, vSAN disk minimum firmware (GXA5) compared within one family.
     2.1  2026-11-23  Driver and firmware check: running driver and firmware per device compared with the
                      versions the guide lists per release (DriverStatus, FirmwareStatus), -SkipDriverCheck.
     2.0  2026-11-23  Rewrite (was Report-PCIDevices.ps1): environment config, standard header, ESXi
@@ -205,7 +208,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ScriptVersion = '2.1 (2026-11-23)'
+$script:ScriptVersion = '2.2 (2026-11-23)'
 Write-Host "Get-EsxiHardwareCompatibility.ps1 version $script:ScriptVersion" -ForegroundColor Cyan
 $isCore = $PSVersionTable.PSEdition -eq 'Core'
 
@@ -554,7 +557,9 @@ function Get-DeviceDriverFirmware($EsxCli, $Device, [hashtable]$HostCache) {
 }
 function Test-DriverVersion([string]$HostVersion, [string]$GuideVersion) {
     # The host reports the full build ("2.5.2.0-1OEM.800.1.0.20613240"), the guide a prefix of it ("2.5.2.0-1OEM",
-    # or "90.4902.0.103-1OEM.900" in the vSAN lists).
+    # or "90.4902.0.103-1OEM.900" in the vSAN lists). When the guide lists the version without a build, every build of
+    # that version counts: IO Devices lists "2.9.2.0-1OEM" for ESXi 9.0, so the .800 build of an 8.0 host matches.
+    # When it lists a build (".900"), only that build matches.
     $h = $HostVersion.Trim().ToLowerInvariant(); $g = $GuideVersion.Trim().ToLowerInvariant()
     [bool]($h -and $g -and ($h -eq $g -or $h.StartsWith("$g.") -or $h.StartsWith("$g-")))
 }
@@ -569,9 +574,36 @@ function Test-FirmwareVersion([string]$HostFirmware, [string[]]$Listed, [string]
         $g = & $norm $g
         if ($g -and ($h -eq $g -or $g -in $tokens)) { return $true }
     }
+    if (-not $Minimum) { return $false }
+    $m = & $norm $Minimum
     $hv = $null; $mv = $null
-    if ($Minimum -and [version]::TryParse((& $norm $HostFirmware), [ref]$hv) -and [version]::TryParse((& $norm $Minimum), [ref]$mv)) { return $hv -ge $mv }
-    $false
+    if ([version]::TryParse($h, [ref]$hv) -and [version]::TryParse($m, [ref]$mv)) { return $hv -ge $mv }
+    # Disk revisions are letters and numbers (GXA5, HPD2). Compare only within one family: the same length and the
+    # same leading part, then the rest as a number (GXA4 < GXA5) or, for letters, alphabetically (HPD2 < HPE1).
+    # GXA6 against HPD2 (another vendor's OEM firmware) is not compared.
+    if ($h.Length -ne $m.Length) { return $false }
+    $i = 0; while ($i -lt $h.Length -and $h[$i] -eq $m[$i]) { $i++ }
+    if ($i -eq 0) { return $false }
+    if ($i -eq $h.Length) { return $true }
+    $hr = $h.Substring($i); $mr = $m.Substring($i)
+    if ($hr -match '^\d+$' -and $mr -match '^\d+$') { return [long]$hr -ge [long]$mr }
+    [string]::CompareOrdinal($hr, $mr) -ge 0
+}
+function Test-InboxDriver([string]$Version) {
+    # VMware/Broadcom inbox drivers end in "-<n>vmw" ("34.00.00.00-1vmw", "90.4900.0.5000-3vmw"): they ship with ESXi.
+    $Version -match '-\d*vmw(\.|$)'
+}
+function Get-VersionCore([string]$Text) {
+    # The numbers before the first "-": "35.00.00.00-1vmw.800.1.0" -> 35.0.0.0, to tell newer from older.
+    $nums = @([regex]::Matches(($Text -split '-')[0], '\d+') | Select-Object -First 4 | ForEach-Object { [long]$_.Value })
+    while ($nums.Count -lt 4) { $nums += 0 }
+    $nums
+}
+function Compare-VersionCore([string]$A, [string]$B) {
+    # -1, 0 or 1, comparing the numbers before the first "-".
+    $x = Get-VersionCore $A; $y = Get-VersionCore $B
+    for ($i = 0; $i -lt 4; $i++) { if ($x[$i] -ne $y[$i]) { return $(if ($x[$i] -gt $y[$i]) { 1 } else { -1 }) } }
+    0
 }
 function Get-VersionSortKey([string]$Text) {
     # Sorts "90.4902.0.103-1OEM" above "90.4880.0.109-1OEM" and "8.40" above "8.23": the leading numbers, zero-padded.
@@ -600,11 +632,21 @@ function Get-DriverFirmwareCheck($Lookup, [string[]]$Targets, [string]$DriverNam
         if ($DriverName) {
             $listed = @($rel | ForEach-Object { $_.DriverVersion } | Where-Object { $_ } | Select-Object -Unique | Sort-Object { Get-VersionSortKey $_ } -Descending)
             $matched = @($rel | Where-Object { $_.DriverVersion -and (Test-DriverVersion $DriverVersion $_.DriverVersion) })
-            $show = "$($listed[0])" + $(if ($listed.Count -gt 1) { " (newest of $($listed.Count) listed)" } else { '' })
+            # Show the newest async (vendor) driver and the newest inbox driver separately: an inbox driver ships with
+            # ESXi, so "needs 34.00.00.00-1vmw" while the host runs 35.00 is what the new ESXi image brings, not a downgrade.
+            $async = @($listed | Where-Object { -not (Test-InboxDriver $_) })
+            $inbox = @($listed | Where-Object { Test-InboxDriver $_ })
+            $name = if ($rel[0].Driver) { "$($rel[0].Driver) " } else { '' }
+            $parts = @()
+            if ($async) { $parts += "$name$($async[0])" + $(if ($async.Count -gt 1) { " (newest of $($async.Count) listed)" } else { '' }) }
+            if ($inbox) { $parts += "$(if ($async) { 'or inbox ' } else { "inbox $name" })$($inbox[0]) (ships with $t)" }
+            $show = $parts -join ', '
+            $newer = $DriverVersion -and $listed -and @($listed | Where-Object { (Compare-VersionCore $DriverVersion $_) -le 0 }).Count -eq 0
             $d = if (-not $listed) { 'NoData', 'no driver listed' }
             elseif (-not $DriverVersion) { 'Unknown', "guide lists $show" }
             elseif ($matched) { 'OK', 'OK' }
-            else { 'Update', "needs $(if ($rel[0].Driver) { "$($rel[0].Driver) " })$show" }
+            elseif ($newer) { 'Update', "running version is newer than any listed (not certified for this release); listed: $show" }
+            else { 'Update', "needs $show" }
             $dOut[$t] = $d
         }
         # Firmware: of the rows with the running driver when there are any (the guide pairs them), else of the release.
