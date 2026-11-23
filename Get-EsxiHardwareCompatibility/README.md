@@ -4,12 +4,15 @@ Checks the hardware of every ESXi host against the [Broadcom Compatibility Guide
 
 The script only reads. It changes nothing in vCenter or on the hosts. It needs internet access to `compatibilityguide.broadcom.com` from the machine that runs it.
 
-> **The guide stays the source of truth.** A device is often only supported with a specific driver and firmware. Open the `CompatibilityGuideUrl` of every row you depend on and check the driver and firmware versions before you upgrade.
+For every network card, storage controller and vSAN disk it also compares the **driver and firmware** the host runs with the versions the guide lists for each release in your range, and says which driver you need (see [Driver and firmware](#driver-and-firmware)).
+
+> **The guide stays the source of truth.** A device is often only supported with a specific driver and firmware. Open the `CompatibilityGuideUrl` of every row you depend on and check the driver and firmware versions before you upgrade, certainly where the script says `Check` or `Unknown`.
 
 ## Contents
 
 - [What is checked](#what-is-checked)
 - [Status](#status)
+- [Driver and firmware](#driver-and-firmware)
 - [Requirements](#requirements)
 - [Parameters](#parameters)
 - [Usage](#usage)
@@ -57,6 +60,33 @@ Virtual hardware (nested ESXi in a lab, VMware virtual NICs and disks) is report
 
 **Check the `Message` and `HclMatch` columns.** They say when a match is less certain than an exact one (see [How the lookups work](#how-the-lookups-work)).
 
+## Driver and firmware
+
+For `PCI`, `vSAN controller`, `vSAN NVMe` and `vSAN disk` rows that are in the guide, the script reads from the host:
+
+- the **driver version**: the version of the loaded VMkernel module (`esxcli system module get`), for example `icen 2.5.2.0-1OEM.800.1.0.20613240`;
+- the **firmware**, where ESXi reports it: NICs (`esxcli network nic get`), Fibre Channel HBAs (`esxcli storage san fc list`), NVMe drives (`esxcli nvme device get`) and SAS/SATA disks (the disk revision).
+
+It then opens the guide's detail page of the matching entry and compares them with the driver and firmware the guide lists **for each release in your range** that the device is supported on. Without a range, it compares with the release the host runs now.
+
+| DriverStatus | Meaning |
+|---|---|
+| `OK` | The running driver is listed for every release checked |
+| `Update` | For at least one release another driver version is needed. `DriverCheck` says which, per release: `ESXi 9.0: needs icen 2.3.3.0-1OEM; ESXi 9.1: OK`. When several are listed, it shows the newest |
+| `Unknown` | The host did not report its driver version, or the guide page could not be read |
+| `NoData` | The guide lists no driver for that release |
+
+| FirmwareStatus | Meaning |
+|---|---|
+| `OK` | The running firmware is one the guide lists, or at least the listed minimum (vSAN disks) |
+| `Check` | The running firmware is not one the guide lists. Compare on the guide page: vendors often write firmware versions differently than ESXi reports them (Intel NICs report the NVM version, the guide may list the package version) |
+| `Unknown` | ESXi does not report the firmware. This is normal for RAID and SAS controllers: check it in the server's management (iDRAC, iLO, XClarity) |
+| `NoData` | The guide lists no firmware for that release |
+
+Driver and firmware never change `Status`: a device can be `Supported` on 9.0 and still need another driver. Upgrading from 8.0 to 9.x almost always gives `Update`, because 9.x has its own driver builds; `DriverCheck` then tells you which driver to put in your image (vLCM). The comparison is a prefix match: the host reports the full build (`2.5.2.0-1OEM.800.1.0.20613240`), the guide the version (`2.5.2.0-1OEM`).
+
+`-SkipDriverCheck` turns all of this off (no extra esxcli calls, no detail pages).
+
 ## Requirements
 
 - PowerShell 7 or Windows PowerShell 5.1
@@ -76,6 +106,7 @@ Virtual hardware (nested ESXi in a lab, VMware virtual NICs and disks) is report
 | `-DeviceClass` | No | Regular expressions for the PCI class names to check. Default: `Ethernet`, `Network`, `Fibre`, `InfiniBand`, `Mass storage`, `RAID`, `SCSI`, `Serial Attached`, `SATA`, `Non-Volatile memory` |
 | `-VsanCheck` | No | `Auto` (default): vSAN rows for hosts in vSAN clusters. `Always`: for every host. `Never`: none |
 | `-SkipHclLookup` | No | Only inventory the hardware, without querying the guide (offline, or to get the IDs quickly) |
+| `-SkipDriverCheck` | No | Do not read driver and firmware versions and do not compare them (faster) |
 | `-CsvPath` | No | Also export to CSV, with the list separator of your Windows region (so Excel opens it in columns). The folder is created when needed. `{date}` becomes `yyyyMMdd-HHmm`, `{env}` the environment name |
 | `-HtmlPath` | No | Also write an HTML report (see [HTML report](#html-report)). The folder is created when needed. `{date}` and `{env}` as for `-CsvPath` |
 | `-Credential` | No | vCenter account. Config: `VcUser` / `VcCredentialFile` |
@@ -100,6 +131,11 @@ $r | Format-Table VMHost, Component, Name, Status, MissingReleases
 $r | Where-Object Status -notin 'Supported', 'NotApplicable' |
     Sort-Object Component, Name, VID, DID, SVID, SSID -Unique |
     Format-Table Component, Name, Status, MissingReleases, Message, CompatibilityGuideUrl -Wrap
+
+# Which drivers do I need, and which firmware should I look at? One line per device and running version
+$r | Where-Object { $_.DriverStatus -eq 'Update' -or $_.FirmwareStatus -in 'Check', 'Unknown' } |
+    Sort-Object Name, DriverVersion, Firmware -Unique |
+    Format-Table Name, DriverVersion, DriverCheck, Firmware, FirmwareStatus, FirmwareCheck -Wrap
 
 # Everything about one row
 $r | Where-Object Component -eq 'Server' | Select-Object -First 1 | Format-List *
@@ -135,6 +171,8 @@ Releases checked: ESXi 9.0, ESXi 9.1
 | `Name` | What the host reports: server vendor and model, CPU model, PCI vendor and device name, disk vendor and model |
 | `Detail` | BIOS version (server); CPUID, sockets and cores (CPU); PCI address and class (PCI); device name, size and type (disk) |
 | `Driver` | ESXi driver (module) in use for a PCI device |
+| `DriverVersion` | Version of that driver module on the host |
+| `Firmware` | Firmware the host reports for the device (NIC, FC HBA, NVMe drive, disk revision); empty when ESXi does not report it |
 | `VID`, `DID`, `SVID`, `SSID` | PCI vendor, device, subvendor and subdevice ID, 4 hex digits, as the guide uses them |
 | `Status` | See [Status](#status) |
 | `HclProgram` | Guide section queried: `server`, `cpu`, `io`, `vsanio`, `ssd`, `hdd` |
@@ -143,6 +181,8 @@ Releases checked: ESXi 9.0, ESXi 9.1
 | `ReleasesInRange` | Releases in your range the component is listed for |
 | `MissingReleases` | Releases in your range the component is not listed for |
 | `SupportedReleases` | All releases the guide lists, newest first |
+| `DriverStatus`, `DriverCheck` | Running driver compared with the guide, per release; see [Driver and firmware](#driver-and-firmware) |
+| `FirmwareStatus`, `FirmwareCheck` | Running firmware compared with the guide, per release |
 | `CompatibilityGuideUrl` | The guide page of the entry (or the search page when several entries match) |
 | `Message` | Why a match is uncertain, why a row is not checked, or the error |
 
@@ -153,9 +193,10 @@ Releases checked: ESXi 9.0, ESXi 9.1
 - the environment, vCenter, target range, releases checked and the warnings of the run;
 - summary cards per status (click a card to hide or show those rows);
 - **Needs attention**: one line per unique component that is not Supported (the same NIC on ten hosts is one line), with the reason, the hosts that have it and the guide link;
+- **Driver and firmware**: one line per device (and running driver/firmware) that needs another driver or a firmware check, with what the guide lists per release and the hosts;
 - a table of components by status with a total. The numbers count rows (one per component per host); every row is in exactly one status, so "12 Supported, 4 NotFound" means 16 different rows;
-- one section per host with every component, a coloured status, the PCI IDs and driver, releases in range and missing, and a link to the guide page. Hosts with a problem are expanded; the others are collapsed;
-- a filter box that searches host, device name, IDs, driver, model and releases.
+- one section per host with every component, a coloured status, the PCI IDs and driver, releases in range and missing, the driver and firmware check, and a link to the guide page. Hosts with a problem are expanded; the others are collapsed;
+- a filter box that searches host, device name, IDs, driver, firmware, model and releases.
 
 It follows the light or dark setting of your browser and prints cleanly.
 
@@ -172,11 +213,13 @@ The script uses the same web API as the guide's own web pages (`POST /compguide/
 - **CPU**: the script reads the CPUID signature (leaf 1, for example `0x000606A6`) from the host and finds the CPU series that list exactly that signature. Several series can share one signature (Xeon Gold 6300 and Platinum 8300 are both Ice Lake); the script then narrows down on the model number (`Gold 6338` → series with `6300`). If that fails, all matching series are kept and `Message` says so.
 - **Server**: the guide lists a server once per CPU series. The script searches the model name, keeps only entries with exactly that model name, and of those only the ones with the host's CPU series. So a server can be `Partial` when the model is supported on 9.1 with one CPU generation but not with yours.
 - **vSAN disks** are searched by model number. ESXi often reports an OEM suffix (`MZILT960HBHQ0D3` where the guide says `MZILT960HBHQ-00007`); when the full number finds nothing, the script searches again without the last 3 characters and `HclMatch` is `Keyword`.
+- **Driver and firmware** come from the entry's detail page (`POST /compguide/programs/viewDetails?programId=<section>&id=<entry>`), which lists per release the driver name and version and the firmware (IO Devices), the driver and firmware (vSAN I/O Controller) or the minimum firmware (vSAN SSD/HDD). When a device matches several entries, the script uses the first 5 together. IO entries list every driver of a card (an Intel E810 has `icen` and `irdman`); the script compares only the rows of the driver the host uses. The detail page returns at most 100 rows; for devices with a very long history, the oldest releases may be missing (`NoData`).
 - **Cache**: every unique component is looked up once per run, however many hosts have it, so a large cluster costs few requests.
 
 ## Not checked
 
-- **Driver and firmware versions.** The guide supports a device with specific drivers and firmware per release. The script shows the driver in use (`Driver`), but compares only the device itself. Check driver and firmware on the guide page.
+- **Firmware of RAID/SAS controllers, BIOS and server firmware.** ESXi does not report the controller firmware (`FirmwareStatus Unknown`); the server BIOS is shown in `Detail` but not compared. Use the server vendor's tools or the hardware support manager in vLCM.
+- **Driver features and restrictions.** The guide page can limit a driver to some features (for example RDMA, or a vSAN tier) or add notes. The script compares versions only.
 - **GPUs and accelerators**: they have their own guide sections (GPUs, DirectPath) and are not included. Add `-DeviceClass Display, 3D` to at least list them; they will mostly show `NotFound` in IO Devices.
 - **Disks outside vSAN, SAN LUNs, USB and SD boot devices.** Local disks and arrays are not in the IO guide; arrays are in the Storage/SAN section, per array model and firmware.
 - **vSAN ReadyNode, ESA/OSA tier and memory tiering.** `HclModel` and the guide page show the tier of a vSAN disk, but the script does not check that it fits your vSAN architecture.
@@ -206,7 +249,7 @@ This script uses the shared **environment config**: one JSON file per environmen
 }
 ```
 
-`DeviceClass` and `SkipHclLookup` can be set there too.
+`DeviceClass`, `SkipHclLookup` and `SkipDriverCheck` can be set there too.
 
 ## Troubleshooting
 
@@ -217,8 +260,10 @@ This script uses the shared **environment config**: one JSON file per environmen
 | `Too many outstanding operations` at `Connect-VIServer` | vCenter is overloaded or has too many sessions, not a script problem. Retry later, check Monitor > Sessions, restart `vmware-vpxd` if it persists |
 | `LookupFailed` on every row | No internet access to `compatibilityguide.broadcom.com`, a proxy that needs configuration, or the guide's API has changed |
 | Release in your range "could not be checked" | Nothing is listed for it yet (or the version is mistyped). The status covers only the releases in `Releases checked` |
+| Every driver `Update` after a range of 9.x | Expected when the hosts run 8.0: ESXi 9.x uses its own driver builds. `DriverCheck` lists the driver to add to your vLCM image |
+| Firmware `Check` on a NIC that is up to date | ESXi may report the firmware differently from the guide (NVM version against package version). Compare on the guide page |
 | Excel shows everything in one column | The CSV uses your Windows list separator; open it on a machine with the same regional settings, or import it with Data > From Text/CSV |
 
 ## History
 
-Version 1.0 was `Report-PCIDevices.ps1` and checked NICs and FC HBAs only. Version 2.0 adds the environment config, the version range, server, CPU, storage controller and vSAN checks, and fixes the subdevice ID filter (1.0 sent the subvendor ID under a key the guide ignores), the IDs (now always 4 hex digits), devices without a guide entry, the CSV that was named `.txt` and written once per cluster, and looks up each unique component only once.
+Version 1.0 was `Report-PCIDevices.ps1` and checked NICs and FC HBAs only. Version 2.0 adds the environment config, the version range, server, CPU, storage controller and vSAN checks, and fixes the subdevice ID filter (1.0 sent the subvendor ID under a key the guide ignores), the IDs (now always 4 hex digits), devices without a guide entry, the CSV that was named `.txt` and written once per cluster, and looks up each unique component only once. Version 2.1 adds the driver and firmware check.
