@@ -25,11 +25,12 @@
     "VMHost": ["esx01.lab1.local", "esx02.lab1.local"],
     "NtpServer": ["0.be.pool.ntp.org", "1.be.pool.ntp.org"]
   },
-  "PciDeviceCompatibility": {
+  "HardwareCompatibility": {
     "Cluster": [],
     "MinEsxiVersion": "9.0",
     "MaxEsxiVersion": "9.1.1",
-    "DeviceClass": ["Ethernet", "Fibre"],
-    "CsvPath": "%USERPROFILE%\\Reports\\{env}-pci-devices-{date}.csv"
+    "Component": ["Server", "CPU", "PCI", "Vsan"],
+    "VsanCheck": "Auto",
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv"
   }
 }

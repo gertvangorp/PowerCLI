@@ -7,7 +7,7 @@ PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). E
 | [Get-VCFPrimaryDatastore](Get-VCFPrimaryDatastore/) | VCF 9.x: lists the primary (principal) datastore of every cluster through the SDDC Manager API. | No |
 | [Get-LunMultipathReport](Get-LunMultipathReport/) | Lists every LUN of one or more ESXi hosts with multipath policy, PSP, SATP and working paths. | No |
 | [Get-TpmRecoveryKey](Get-TpmRecoveryKey/) | Reports the TPM recovery key of every ESXi host in a cluster. | No |
-| [Get-PciDeviceCompatibility](Get-PciDeviceCompatibility/) | Lists the NICs and HBAs of every ESXi host and checks them against the Broadcom Compatibility Guide for a target ESXi version range (for example 9.0 to 9.1.1). | No |
+| [Get-EsxiHardwareCompatibility](Get-EsxiHardwareCompatibility/) | Checks the server model, CPU, NICs, HBAs, storage controllers and vSAN disks of every ESXi host against the Broadcom Compatibility Guide, for a target ESXi version range (for example 9.0 to 9.1.1). | No |
 | [Set-EsxiNtpServer](Set-EsxiNtpServer/) | Sets the NTP servers and the ntpd service directly on ESXi hosts. Supports `-WhatIf`. | **Yes** |
 
 ## Common conventions
