@@ -16,13 +16,16 @@
     as drift.
 
     Per host: cluster, host time, reference time, offset in seconds (positive = host is ahead),
-    time protocol, configured NTP servers, ntpd running and its startup policy. A host gets
-    Status "Warning" with the reason in Message when the offset is larger than -MaxOffsetSeconds,
-    no NTP server is configured, ntpd is not running, or its policy is not "on". Hosts that are not
-    connected or fail are reported too (Skipped / Failed), not silently left out.
+    time protocol, configured NTP servers, ntpd running and its startup policy.
+    OffsetLevel: OK below -WarningOffsetSeconds (default 2), Warning from 2 up to and including
+    -CriticalOffsetSeconds (default 10), Critical above 10. Status is the worst of OffsetLevel and the
+    NTP checks (no NTP server configured, ntpd not running, or its policy not "on" = Warning), with the
+    reasons in Message. Hosts that are not connected or fail are reported too (Skipped / Failed).
 
     Results are written to the pipeline as objects, sorted by cluster and host. With -CsvPath they
-    are also exported to CSV. A short summary (min, max, average offset, warnings) is printed at the end.
+    are also exported to CSV, with -HtmlPath to a self-contained HTML report (summary on top, offsets
+    colour coded green / orange / red, hosts that need attention, all hosts per cluster). A short
+    summary (min, max, average offset, warnings) is printed at the end.
 
     The script only reads. It changes nothing in vCenter or on the hosts. To fix the NTP settings
     use Set-EsxiNtpServer in this repository.
@@ -43,8 +46,11 @@
     One or more host names as known in vCenter (wildcards work). Combined with -Cluster, only the
     matching hosts in those clusters. Config: VMHost.
 
-.PARAMETER MaxOffsetSeconds
-    Offset (absolute, in seconds) above which a host gets Status "Warning". Default 1. Config: MaxOffsetSeconds.
+.PARAMETER WarningOffsetSeconds
+    Offset (absolute, in seconds) from which a host is Warning (orange). Default 2. Config: WarningOffsetSeconds.
+
+.PARAMETER CriticalOffsetSeconds
+    Offset (absolute, in seconds) above which a host is Critical (red). Default 10. Config: CriticalOffsetSeconds.
 
 .PARAMETER ReferenceNtpServer
     One NTP server used as the reference for every host, instead of each host's own NTP servers
@@ -56,6 +62,10 @@
 .PARAMETER CsvPath
     Optional CSV export path. "{date}" is replaced with yyyyMMdd-HHmm, "{env}" with the environment
     name. Config: CsvPath.
+
+.PARAMETER HtmlPath
+    Optional HTML report path (one self-contained file; the folder is created when needed). "{date}"
+    and "{env}" as for -CsvPath. Config: HtmlPath.
 
 .PARAMETER Credential
     vCenter account. Config: VcUser (prompt) or VcCredentialFile (Export-Clixml).
@@ -88,7 +98,7 @@
 
 .EXAMPLE
     # Environment config: reads config\lab1.config.json, vCenter account from the SDDC Manager vault
-    .\Get-EsxiTimeReport.ps1 -Environment lab1 -UseSddcCredentials -CsvPath C:\Reports\{env}-time-{date}.csv
+    .\Get-EsxiTimeReport.ps1 -Environment lab1 -UseSddcCredentials -HtmlPath C:\Reports\{env}-time-{date}.html
 
 .NOTES
     Name        : Get-EsxiTimeReport.ps1
@@ -103,10 +113,10 @@
 
     Version history
     2.0  2026-11-24  Rewrite for this repository: environment config, -UseSddcCredentials, Cluster column,
-                     -Cluster / -VMHost filters, signed offset with -MaxOffsetSeconds and Status,
+                     -Cluster / -VMHost filters, signed offset, OffsetLevel (<2 / 2-10 / >10 s) and Status,
                      reference = the host's own NTP server, -ReferenceNtpServer or -UseLocalClock (SNTP)
                      instead of the retired earthtools.org web service,
-                     ntpd policy, disconnects only its own vCenter session.
+                     ntpd policy, -HtmlPath report, disconnects only its own vCenter session.
     1.0  2025-10-13  First version (Report-HostTime2NTP.ps1).
 
 .LINK
@@ -117,10 +127,12 @@ param(
     [string]$VCenter,
     [string[]]$Cluster,
     [string[]]$VMHost,
-    [double]$MaxOffsetSeconds = 1,
+    [double]$WarningOffsetSeconds = 2,
+    [double]$CriticalOffsetSeconds = 10,
     [string]$ReferenceNtpServer,
     [switch]$UseLocalClock,
     [string]$CsvPath,
+    [string]$HtmlPath,
     [pscredential]$Credential,
     [string]$Environment,
     [string]$ConfigFile,
@@ -137,7 +149,7 @@ $isCore = $PSVersionTable.PSEdition -eq 'Core'
 
 # Settings this script reads from the environment config (key = parameter name).
 $ConfigSection = 'HostTimeReport'
-$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; VMHost = 'list'; MaxOffsetSeconds = 'string'; ReferenceNtpServer = 'string'; UseLocalClock = 'switch'; CsvPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
+$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; VMHost = 'list'; WarningOffsetSeconds = 'string'; CriticalOffsetSeconds = 'string'; ReferenceNtpServer = 'string'; UseLocalClock = 'switch'; CsvPath = 'string'; HtmlPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
 $ConfigCredentials = [ordered]@{ Vc = 'Credential'; Sddc = 'SddcCredential' }
 
 #region Environment config file (shared: identical in every script, checked by CI) -------------
@@ -199,7 +211,10 @@ function Expand-PathTemplate([string]$Path) {
 #endregion
 if (-not $VCenter) { throw 'No vCenter given. Use -VCenter or "VCenter" in the config file.' }
 $CsvPath = Expand-PathTemplate $CsvPath
-$MaxOffsetSeconds = [double]::Parse("$MaxOffsetSeconds", [Globalization.CultureInfo]::InvariantCulture)
+$HtmlPath = Expand-PathTemplate $HtmlPath
+$WarningOffsetSeconds = [double]::Parse("$WarningOffsetSeconds", [Globalization.CultureInfo]::InvariantCulture)
+$CriticalOffsetSeconds = [double]::Parse("$CriticalOffsetSeconds", [Globalization.CultureInfo]::InvariantCulture)
+if ($CriticalOffsetSeconds -lt $WarningOffsetSeconds) { throw '-CriticalOffsetSeconds must be at least -WarningOffsetSeconds.' }
 
 #region SDDC Manager vault functions (shared: identical in every script, checked by CI) -------
 function Invoke-SddcApi {
@@ -312,6 +327,117 @@ elseif ($ReferenceNtpServer) { Write-Host "Reference: NTP server $ReferenceNtpSe
 else { Write-Host 'Reference: per host, the first of its own NTP servers that answers from this machine (else the local clock).' -ForegroundColor Cyan }
 #endregion
 
+#region HTML report -----------------------------------------------------------------------------
+function ConvertTo-HtmlText($Value) { [System.Net.WebUtility]::HtmlEncode("$Value") }
+function Export-TimeHtmlReport($Report, [string]$Path, [System.Collections.IDictionary]$Info) {
+    # One self-contained file (no external CSS, JS or fonts), so it can be mailed or archived as is.
+    $e = { param($v) ConvertTo-HtmlText $v }
+    $cls = @{ OK = 'ok'; Warning = 'warn'; Critical = 'bad'; Failed = 'bad'; Skipped = 'muted' }
+    $order = @('Critical', 'Failed', 'Warning', 'Skipped', 'OK')
+    $fmt = { param($v) if ($null -eq $v) { '' } else { ([double]$v).ToString('0.000', [Globalization.CultureInfo]::InvariantCulture) } }
+    $measured = @($Report | Where-Object { $null -ne $_.OffsetSeconds })
+    $bandCount = @{ ok = @($measured | Where-Object OffsetLevel -eq 'OK').Count; warn = @($measured | Where-Object OffsetLevel -eq 'Warning').Count; bad = @($measured | Where-Object OffsetLevel -eq 'Critical').Count }
+    $ntpIssues = @($Report | Where-Object { $_.Message -match 'NTP server|not running|policy|not found' }).Count
+    $notMeasured = @($Report | Where-Object { $null -eq $_.OffsetSeconds }).Count
+
+    $sb = [System.Text.StringBuilder]::new()
+    $title = "ESXi host time - $($Info.Environment)"
+    [void]$sb.Append(@"
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$(& $e $title)</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#5d6675;--line:#e2e5ea;--ok:#1a7f45;--okbg:#e3f4ea;--warn:#946200;--warnbg:#fdf1d6;--bad:#b42318;--badbg:#fde7e5;--mutedbg:#eef0f3;--accent:#1f5fbf}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1c2027;--text:#e6e8ec;--muted:#9aa3b2;--line:#2c323c;--ok:#5fd08f;--okbg:#173525;--warn:#f0c058;--warnbg:#3a2f12;--bad:#ff8a80;--badbg:#3d1c1a;--mutedbg:#262b33;--accent:#7fb0ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif}
+main{max-width:1400px;margin:0 auto;padding:24px 16px 48px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px}
+.meta{color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 18px;margin-bottom:16px}.meta b{color:var(--text);font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card[data-level]{cursor:pointer;user-select:none}.card.off{opacity:.35}
+.card .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}.card .l{color:var(--muted)}
+.card.ok .n{color:var(--ok)}.card.warn .n{color:var(--warn)}.card.bad .n{color:var(--bad)}.card.muted .n{color:var(--muted)}
+.stats{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-top:10px;display:flex;flex-wrap:wrap;gap:4px 24px;color:var(--muted)}.stats b{color:var(--text)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);background:var(--mutedbg)}
+tr:last-child td{border-bottom:0}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.cl td{background:var(--mutedbg);font-weight:600}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.badge.ok{background:var(--okbg);color:var(--ok)}.badge.warn{background:var(--warnbg);color:var(--warn)}.badge.bad{background:var(--badbg);color:var(--bad)}.badge.muted{background:var(--mutedbg);color:var(--muted)}
+.off-ok{color:var(--ok);font-weight:600}.off-warn{color:var(--warn);font-weight:700}.off-bad{color:var(--bad);font-weight:700}
+.small{color:var(--muted);font-size:12px}.mono{font-family:Consolas,ui-monospace,monospace;font-size:12px;white-space:nowrap}
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}.bar input{flex:1;min-width:220px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
+.scroll{overflow-x:auto}footer{color:var(--muted);font-size:12px;margin-top:32px}
+@media print{.bar{display:none}}
+</style></head><body><main>
+<h1>ESXi host time</h1>
+<div class="meta">
+"@)
+    foreach ($k in $Info.Keys) { if ($Info[$k]) { [void]$sb.Append("<span>$(& $e $k): <b>$(& $e $Info[$k])</b></span>") } }
+    [void]$sb.Append('</div>')
+
+    # Summary: offset bands (click to show or hide), NTP config issues, hosts not measured, statistics.
+    $w = & $fmt $WarningOffsetSeconds; $c = & $fmt $CriticalOffsetSeconds
+    $w = $w -replace '\.?0+$', ''; $c = $c -replace '\.?0+$', ''
+    [void]$sb.Append('<h2>Summary</h2><div class="cards">')
+    [void]$sb.Append("<div class=`"card ok`" data-level=`"OK`" title=`"Click to show or hide`"><div class=`"n`">$($bandCount.ok)</div><div class=`"l`">Offset &lt; $w s</div></div>")
+    [void]$sb.Append("<div class=`"card warn`" data-level=`"Warning`" title=`"Click to show or hide`"><div class=`"n`">$($bandCount.warn)</div><div class=`"l`">Offset $w to $c s</div></div>")
+    [void]$sb.Append("<div class=`"card bad`" data-level=`"Critical`" title=`"Click to show or hide`"><div class=`"n`">$($bandCount.bad)</div><div class=`"l`">Offset &gt; $c s</div></div>")
+    [void]$sb.Append("<div class=`"card $(if ($ntpIssues) { 'warn' } else { 'ok' })`"><div class=`"n`">$ntpIssues</div><div class=`"l`">NTP config issues</div></div>")
+    [void]$sb.Append("<div class=`"card $(if ($notMeasured) { 'bad' } else { 'muted' })`" data-level=`"None`" title=`"Click to show or hide`"><div class=`"n`">$notMeasured</div><div class=`"l`">Not measured (failed / skipped)</div></div>")
+    [void]$sb.Append("<div class=`"card muted`"><div class=`"n`">$($Report.Count)</div><div class=`"l`">Hosts in total</div></div>")
+    [void]$sb.Append('</div>')
+    if ($measured) {
+        $st = $measured | Measure-Object -Property OffsetSeconds -Minimum -Maximum -Average
+        $worst = $measured | Sort-Object { [Math]::Abs($_.OffsetSeconds) } -Descending | Select-Object -First 1
+        $refs = @($measured.Reference | Sort-Object -Unique) -join ', '
+        [void]$sb.Append("<div class=`"stats`"><span>Largest offset: <b>$(& $e $worst.VMHost) ($(& $fmt $worst.OffsetSeconds) s)</b></span><span>Min: <b>$(& $fmt $st.Minimum) s</b></span><span>Max: <b>$(& $fmt $st.Maximum) s</b></span><span>Average: <b>$(& $fmt $st.Average) s</b></span><span>Compared with: <b>$(& $e $refs)</b></span></div>")
+    }
+
+    # Needs attention: every host that is not OK, worst first.
+    $attention = @($Report | Where-Object Status -ne 'OK' | Sort-Object { [array]::IndexOf($order, $_.Status) }, { if ($null -ne $_.OffsetSeconds) { -1 * [Math]::Abs($_.OffsetSeconds) } else { 0 } }, VMHost)
+    [void]$sb.Append("<h2>Needs attention ($($attention.Count))</h2>")
+    if (-not $attention) { [void]$sb.Append("<p class=`"small`">Every host is within $w s of its reference and has NTP configured and running.</p>") }
+    else {
+        [void]$sb.Append('<div class="scroll"><table><tr><th>Status</th><th>Host</th><th>Cluster</th><th class="num">Offset (s)</th><th>Reason</th></tr>')
+        foreach ($r in $attention) {
+            $oc = if ($r.OffsetLevel) { "off-$($cls[$r.OffsetLevel])" } else { '' }
+            [void]$sb.Append("<tr><td><span class=`"badge $($cls[$r.Status])`">$($r.Status)</span></td><td>$(& $e $r.VMHost)</td><td>$(& $e $r.Cluster)</td><td class=`"num $oc`">$(& $fmt $r.OffsetSeconds)</td><td class=`"small`">$(& $e $r.Message)</td></tr>")
+        }
+        [void]$sb.Append('</table></div>')
+    }
+
+    # All hosts, per cluster.
+    [void]$sb.Append('<h2>All hosts</h2><div class="bar"><input id="q" type="search" placeholder="Filter: host, cluster, NTP server, status ..."></div>')
+    [void]$sb.Append('<div class="scroll"><table><tr><th>Host</th><th class="num">Offset (s)</th><th>Host time (UTC)</th><th>Reference time (UTC)</th><th>Reference</th><th>Protocol</th><th>NTP servers</th><th>Service</th><th>Status</th></tr>')
+    foreach ($g in ($Report | Group-Object Cluster | Sort-Object Name)) {
+        [void]$sb.Append("<tr class=`"cl`"><td colspan=`"9`">$(& $e $(if ($g.Name) { $g.Name } else { '(no cluster)' })) <span class=`"small`">$($g.Count) host(s)</span></td></tr>")
+        foreach ($r in $g.Group) {
+            $level = if ($r.OffsetLevel) { $r.OffsetLevel } else { 'None' }
+            $oc = if ($r.OffsetLevel) { "off-$($cls[$r.OffsetLevel])" } else { '' }
+            $svc = if ($null -ne $r.NtpServiceRunning) { "$(if ($r.NtpServiceRunning) { 'Running' } else { 'Stopped' }), policy $(& $e $r.NtpServicePolicy)" } else { '' }
+            $msg = if ($r.Message) { "<div class=`"small`">$(& $e $r.Message)</div>" } else { '' }
+            $search = (& $e ("$($r.VMHost) $($r.Cluster) $($r.NtpServers) $($r.Reference) $($r.Status) $($r.Message)").ToLower())
+            [void]$sb.Append("<tr data-level=`"$level`" data-search=`"$search`"><td>$(& $e $r.VMHost)</td><td class=`"num $oc`">$(& $fmt $r.OffsetSeconds)</td><td class=`"mono`">$(& $e $r.VMHostTimeUtc)</td><td class=`"mono`">$(& $e $r.ReferenceTimeUtc)</td><td class=`"small`">$(& $e $r.Reference)</td><td>$(& $e $r.TimeProtocol)</td><td class=`"small`">$(& $e $r.NtpServers)</td><td class=`"small`">$svc</td><td><span class=`"badge $($cls[$r.Status])`">$($r.Status)</span>$msg</td></tr>")
+        }
+    }
+    [void]$sb.Append('</table></div>')
+    [void]$sb.Append(@"
+<footer>Generated by Get-EsxiTimeReport.ps1 (https://github.com/gertvangorp/PowerCLI). Offset = host time minus reference time; positive means the host is ahead.
+For an NTP reference, the clock of the machine that ran the script was measured against that NTP server and corrected.</footer>
+</main><script>
+(function(){var off={},q=document.getElementById('q');
+function apply(){var t=(q.value||'').toLowerCase();document.querySelectorAll('tr[data-search]').forEach(function(r){r.style.display=(!off[r.dataset.level]&&(!t||r.dataset.search.indexOf(t)>=0))?'':'none'});}
+document.querySelectorAll('.card[data-level]').forEach(function(c){c.addEventListener('click',function(){var l=c.dataset.level;off[l]=!off[l];c.classList.toggle('off',off[l]);apply();});});
+q.addEventListener('input',apply);})();
+</script></body></html>
+"@)
+    $dir = Split-Path -Path $Path -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [IO.File]::WriteAllText($Path, $sb.ToString(), [Text.UTF8Encoding]::new($false))
+}
+#endregion
+
 $vi = $null
 $report = [System.Collections.Generic.List[object]]::new()
 try {
@@ -325,7 +451,7 @@ try {
     foreach ($esx in @($esxHosts | Sort-Object { "$($_.Parent)" }, Name)) {
         $row = [ordered]@{
             VMHost = $esx.Name; Cluster = "$($esx.Parent)"; VMHostTimeUtc = $null; ReferenceTimeUtc = $null; OffsetSeconds = $null
-            Reference = $null; TimeProtocol = $null; NtpServers = $null; NtpServiceRunning = $null; NtpServicePolicy = $null
+            OffsetLevel = $null; Reference = $null; TimeProtocol = $null; NtpServers = $null; NtpServiceRunning = $null; NtpServicePolicy = $null
             Status = 'OK'; Message = ''
         }
         if ("$($esx.ConnectionState)" -notin 'Connected', 'Maintenance') {
@@ -363,15 +489,19 @@ try {
             $row.NtpServiceRunning = [bool]$service.Running
             $row.NtpServicePolicy = "$($service.Policy)"
 
+            $absOffset = [Math]::Abs($offset)
+            $row.OffsetLevel = if ($absOffset -gt $CriticalOffsetSeconds) { 'Critical' } elseif ($absOffset -ge $WarningOffsetSeconds) { 'Warning' } else { 'OK' }
             $issues = @()
-            if ([Math]::Abs($offset) -gt $MaxOffsetSeconds) { $issues += "Offset $offset s is above $MaxOffsetSeconds s" }
+            if ($row.OffsetLevel -eq 'Critical') { $issues += "Offset $offset s is above $CriticalOffsetSeconds s" }
+            elseif ($row.OffsetLevel -eq 'Warning') { $issues += "Offset $offset s is $WarningOffsetSeconds s or more" }
             if ($protocol -ne 'ptp' -and -not $ntpServers) { $issues += 'No NTP server configured' }
             if (-not $service) { $issues += "Service $serviceKey not found" }
             else {
                 if (-not $service.Running) { $issues += "$serviceKey is not running" }
                 if ($service.Policy -ne 'on') { $issues += "$serviceKey policy is '$($service.Policy)', not 'on'" }
             }
-            if ($issues) { $row.Status = 'Warning'; $row.Message = $issues -join '; ' }
+            $row.Status = if ($row.OffsetLevel -eq 'Critical') { 'Critical' } elseif ($issues) { 'Warning' } else { 'OK' }
+            $row.Message = $issues -join '; '
         }
         catch {
             $row.Status = 'Failed'; $row.Message = $_.Exception.Message
@@ -394,12 +524,27 @@ if ($measured) {
             $measured.Count, (@($measured.Reference | Sort-Object -Unique) -join ', '), $stats.Minimum, $stats.Maximum, $stats.Average, $worst.VMHost, $worst.OffsetSeconds) -ForegroundColor Cyan
 }
 $notOk = @($report | Where-Object Status -ne 'OK')
-if ($notOk) { Write-Warning "$($notOk.Count) host(s) need attention (Status Warning, Failed or Skipped)." }
-elseif ($report.Count) { Write-Host "All hosts within $MaxOffsetSeconds s and NTP configured." -ForegroundColor Green }
+if ($notOk) { Write-Warning "$($notOk.Count) host(s) need attention (Status Critical, Warning, Failed or Skipped)." }
+elseif ($report.Count) { Write-Host "All hosts below $WarningOffsetSeconds s and NTP configured." -ForegroundColor Green }
 else { Write-Warning 'No hosts found. Check -Cluster / -VMHost.' }
 
 if ($CsvPath -and $report.Count) {
+    $csvDir = Split-Path -Path $CsvPath -Parent
+    if ($csvDir -and -not (Test-Path -LiteralPath $csvDir)) { New-Item -ItemType Directory -Path $csvDir -Force | Out-Null }
     $report | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8 -UseCulture -Force
-    Write-Host "Report written to $CsvPath" -ForegroundColor Cyan
+    Write-Host "CSV: $CsvPath" -ForegroundColor Green
+}
+if ($HtmlPath -and $report.Count) {
+    $info = [ordered]@{
+        Environment = $EnvironmentName
+        vCenter     = $VCenter
+        Generated   = (Get-Date -Format 'yyyy-MM-dd HH:mm')
+        Reference   = if ($UseLocalClock) { 'local clock' } elseif ($ReferenceNtpServer) { "NTP $ReferenceNtpServer" } else { "each host's own NTP server" }
+        Thresholds  = "orange from $WarningOffsetSeconds s, red above $CriticalOffsetSeconds s"
+        Hosts       = $report.Count
+        Script      = "version $script:ScriptVersion"
+    }
+    Export-TimeHtmlReport $report $HtmlPath $info
+    Write-Host "HTML: $HtmlPath" -ForegroundColor Green
 }
 $report

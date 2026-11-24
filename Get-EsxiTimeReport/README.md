@@ -2,9 +2,18 @@
 
 Checks the clock of every ESXi host against a reference time and shows the host's NTP configuration next to it, so you can spot hosts that drift, have no NTP server, or have ntpd stopped. Handy before an upgrade, when certificates or vSAN complain about time, or after changing NTP with [Set-EsxiNtpServer](../Set-EsxiNtpServer/).
 
-Per host: cluster, host time and reference time (UTC), offset in seconds (positive = host is ahead), time protocol (NTP or PTP), NTP servers, whether ntpd runs and its startup policy. A host gets **Status `Warning`**, with the reason in `Message`, when:
+Per host: cluster, host time and reference time (UTC), offset in seconds (positive = host is ahead), time protocol (NTP or PTP), NTP servers, whether ntpd runs and its startup policy.
 
-- the offset is larger than `-MaxOffsetSeconds` (default 1 second),
+The offset (absolute value) gets an **`OffsetLevel`**, also the colour in the HTML report:
+
+| OffsetLevel | Offset | Colour |
+|---|---|---|
+| `OK` | below 2 s | green |
+| `Warning` | 2 s up to and including 10 s | orange |
+| `Critical` | above 10 s | red |
+
+Change the limits with `-WarningOffsetSeconds` and `-CriticalOffsetSeconds`. **`Status`** is the worst of `OffsetLevel` and these NTP checks, which give `Warning`, with the reasons in `Message`:
+
 - no NTP server is configured,
 - ntpd (or ptpd for PTP hosts) is not running, or its policy is not `on` (start and stop with host).
 
@@ -39,9 +48,11 @@ The local time is taken halfway the host query, so the round trip to vCenter doe
 | `-VCenter` | Yes, or in the config file | vCenter FQDN |
 | `-Cluster` | No | One or more cluster names. Leave out for all hosts in vCenter |
 | `-VMHost` | No | One or more host names as known in vCenter. Wildcards work (`esx0*`). With `-Cluster`: only those hosts in those clusters |
-| `-MaxOffsetSeconds` | No | Offset (absolute) above which a host gets `Warning`. Default `1` |
+| `-WarningOffsetSeconds` | No | Offset (absolute) from which a host is `Warning` (orange). Default `2` |
+| `-CriticalOffsetSeconds` | No | Offset (absolute) above which a host is `Critical` (red). Default `10` |
 | `-ReferenceNtpServer` | No | Compare every host with this NTP server instead of the host's own NTP servers |
 | `-UseLocalClock` | No | Compare with the clock of this machine instead of NTP |
+| `-HtmlPath` | No | Also write an HTML report (see below). `{date}` and `{env}` as for `-CsvPath`; the folder is created when needed |
 | `-CsvPath` | No | Also export to CSV (separator from your regional settings, like Excel). `{date}` becomes `yyyyMMdd-HHmm`, `{env}` the environment name |
 | `-Credential` | No | vCenter account. Config: `VcUser` / `VcCredentialFile` |
 | `-Environment` | No | Environment config name: reads `config\<name>.config.json` |
@@ -60,8 +71,8 @@ The local time is taken halfway the host query, so the round trip to vCenter doe
 .\Get-EsxiTimeReport.ps1 -VCenter vc01.corp.local -Cluster CL-MGMT-01 -ReferenceNtpServer ntp1.corp.local |
     Where-Object Status -ne 'OK' | Format-Table VMHost, OffsetSeconds, Message
 
-# VCF: environment config, vCenter SSO account from the SDDC Manager vault, to CSV
-.\Get-EsxiTimeReport.ps1 -Environment lab1 -UseSddcCredentials -CsvPath C:\Reports\{env}-time-{date}.csv
+# VCF: environment config, vCenter SSO account from the SDDC Manager vault, HTML report and CSV
+.\Get-EsxiTimeReport.ps1 -Environment lab1 -UseSddcCredentials -HtmlPath C:\Reports\{env}-time-{date}.html -CsvPath C:\Reports\{env}-time-{date}.csv
 ```
 
 ## Credentials
@@ -81,12 +92,23 @@ This script uses the shared **environment config**: one JSON file per environmen
 "HostTimeReport": {
   "Cluster": [],
   "VMHost": [],
-  "MaxOffsetSeconds": 1,
+  "WarningOffsetSeconds": 2,
+  "CriticalOffsetSeconds": 10,
   "ReferenceNtpServer": "",
   "UseLocalClock": false,
-  "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv"
+  "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv",
+  "HtmlPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.html"
 }
 ```
+
+## HTML report
+
+With `-HtmlPath` the script also writes one self-contained HTML file (no external CSS or scripts, so you can mail or archive it; light and dark mode), in the same style as the hardware compatibility report:
+
+- **Header:** environment, vCenter, date, reference, thresholds, number of hosts, script version.
+- **Summary:** cards with the number of hosts below 2 s (green), 2 to 10 s (orange), above 10 s (red), hosts with NTP config issues and hosts not measured. Click a card to show or hide those hosts. Below the cards: the largest offset and which host, min, max, average, and what the hosts were compared with.
+- **Needs attention:** every host that is not OK, worst first, with the reason.
+- **All hosts:** grouped per cluster, offset colour coded, host and reference time, NTP servers, service state and status. With a filter box.
 
 ## Output
 
@@ -96,12 +118,12 @@ The results go to the pipeline as objects (not `Format-Table`), so you can filte
 VMHost           Cluster    OffsetSeconds TimeProtocol NtpServers                           NtpServiceRunning NtpServicePolicy Status  Message
 ------           -------    ------------- ------------ ----------                           ----------------- ---------------- ------  -------
 esx01.corp.local CL-MGMT-01         0.004 NTP          0.be.pool.ntp.org, 1.be.pool.ntp.org              True on               OK
-esx02.corp.local CL-MGMT-01        76.210 NTP          0.be.pool.ntp.org, 1.be.pool.ntp.org             False off              Warning Offset 76.21 s is above 1 s; ntpd is not running; ntpd policy is 'off', not 'on'
+esx02.corp.local CL-MGMT-01        76.210 NTP          0.be.pool.ntp.org, 1.be.pool.ntp.org             False off              Critical Offset 76.21 s is above 10 s; ntpd is not running; ntpd policy is 'off', not 'on'
 esx03.corp.local CL-MGMT-01                                                                                                     Skipped Host is NotResponding
 ```
 
-The other columns are `VMHostTimeUtc`, `ReferenceTimeUtc` (both `yyyy-MM-dd HH:mm:ss.fff`) and `Reference` (`Local clock` or `NTP <server>`).
+The other columns are `VMHostTimeUtc`, `ReferenceTimeUtc` (both `yyyy-MM-dd HH:mm:ss.fff`), `OffsetLevel` and `Reference` (`Local clock` or `NTP <server>`).
 
 ## History
 
-Version 2.0 is a rewrite of `Report-HostTime2NTP.ps1` (1.0, based on Get-VMHostTimeReport by Grzegorz Kulikowski). Changes: environment config and vault credentials, a Cluster column and `-Cluster` / `-VMHost` filters, a signed offset with a threshold and Status, the host's own NTP server (or `-ReferenceNtpServer` / `-UseLocalClock`) as reference instead of the earthtools.org web service (no longer online), the ntpd policy, and it disconnects only its own vCenter session.
+Version 2.0 is a rewrite of `Report-HostTime2NTP.ps1` (1.0, based on Get-VMHostTimeReport by Grzegorz Kulikowski). Changes: environment config and vault credentials, a Cluster column and `-Cluster` / `-VMHost` filters, a signed offset with colour-coded levels, Status and an HTML report, the host's own NTP server (or `-ReferenceNtpServer` / `-UseLocalClock`) as reference instead of the earthtools.org web service (no longer online), the ntpd policy, and it disconnects only its own vCenter session.

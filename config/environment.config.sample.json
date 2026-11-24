@@ -37,9 +37,11 @@
   "HostTimeReport": {
     "Cluster": [],
     "VMHost": [],
-    "MaxOffsetSeconds": 1,
+    "WarningOffsetSeconds": 2,
+    "CriticalOffsetSeconds": 10,
     "ReferenceNtpServer": "",
     "UseLocalClock": false,
-    "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv"
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv",
+    "HtmlPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.html"
   }
 }
