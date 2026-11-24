@@ -33,5 +33,15 @@
     "VsanCheck": "Auto",
     "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv",
     "HtmlPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.html"
+  },
+  "HostTimeReport": {
+    "Cluster": [],
+    "VMHost": [],
+    "WarningOffsetSeconds": 2,
+    "CriticalOffsetSeconds": 10,
+    "ReferenceNtpServer": "",
+    "UseLocalClock": false,
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv",
+    "HtmlPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.html"
   }
 }
