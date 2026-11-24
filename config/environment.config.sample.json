@@ -33,5 +33,12 @@
     "VsanCheck": "Auto",
     "CsvPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.csv",
     "HtmlPath": "%USERPROFILE%\\Reports\\{env}-hardware-{date}.html"
+  },
+  "HostTimeReport": {
+    "Cluster": [],
+    "VMHost": [],
+    "MaxOffsetSeconds": 1,
+    "ReferenceNtpServer": "0.be.pool.ntp.org",
+    "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv"
   }
 }
