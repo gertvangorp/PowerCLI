@@ -38,7 +38,8 @@
     "Cluster": [],
     "VMHost": [],
     "MaxOffsetSeconds": 1,
-    "ReferenceNtpServer": "0.be.pool.ntp.org",
+    "ReferenceNtpServer": "",
+    "UseLocalClock": false,
     "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv"
   }
 }

@@ -8,7 +8,7 @@ PowerShell and PowerCLI scripts for vSphere and VMware Cloud Foundation (VCF). E
 | [Get-LunMultipathReport](Get-LunMultipathReport/) | Lists every LUN of one or more ESXi hosts with multipath policy, PSP, SATP and working paths. | No |
 | [Get-TpmRecoveryKey](Get-TpmRecoveryKey/) | Reports the TPM recovery key of every ESXi host in a cluster. | No |
 | [Get-EsxiHardwareCompatibility](Get-EsxiHardwareCompatibility/) | Checks the server model, CPU, NICs, HBAs, storage controllers and vSAN disks of every ESXi host against the Broadcom Compatibility Guide, for a target ESXi version range (for example 9.0 to 9.1.1), including the driver and firmware versions each release needs. | No |
-| [Get-EsxiTimeReport](Get-EsxiTimeReport/) | Compares the clock of every ESXi host with the local clock or an NTP server and reports the offset, NTP servers and ntpd state. Flags hosts that drift or have NTP not set up. | No |
+| [Get-EsxiTimeReport](Get-EsxiTimeReport/) | Compares the clock of every ESXi host with its own NTP server (or another reference) and reports the offset, NTP servers and ntpd state. Flags hosts that drift or have NTP not set up. | No |
 | [Set-EsxiNtpServer](Set-EsxiNtpServer/) | Sets the NTP servers and the ntpd service directly on ESXi hosts. Supports `-WhatIf`. | **Yes** |
 
 ## Common conventions

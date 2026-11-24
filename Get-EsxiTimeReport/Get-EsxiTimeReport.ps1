@@ -6,10 +6,12 @@
 .DESCRIPTION
     Connects to vCenter and asks every host for its current time (HostDateTimeSystem.QueryDateTime),
     then compares it with a reference time:
-      - by default the UTC clock of the machine that runs the script,
-      - with -ReferenceNtpServer, that NTP server: the script asks it once (SNTP, UDP 123) how far the
-        local clock is off and corrects for that, so a wrong clock on your own machine does not show
-        up as drift on every host.
+      - by default the host's own NTP server: the first server in the host's NTP config that answers
+        from this machine,
+      - with -ReferenceNtpServer, that one NTP server for every host,
+      - with -UseLocalClock, or when no NTP server answers, the UTC clock of this machine.
+    For an NTP reference the script asks the server once (SNTP, UDP 123) how far the local clock is
+    off and corrects for that, so a wrong clock on your own machine does not show up as drift.
     The local time is taken halfway the QueryDateTime call, so the vCenter round trip is not counted
     as drift.
 
@@ -45,8 +47,11 @@
     Offset (absolute, in seconds) above which a host gets Status "Warning". Default 1. Config: MaxOffsetSeconds.
 
 .PARAMETER ReferenceNtpServer
-    Optional NTP server used as the reference time instead of the local clock (needs UDP 123 from
-    this machine). Config: ReferenceNtpServer.
+    One NTP server used as the reference for every host, instead of each host's own NTP servers
+    (needs UDP 123 from this machine). Config: ReferenceNtpServer.
+
+.PARAMETER UseLocalClock
+    Compare with the clock of this machine instead of NTP. Config: UseLocalClock.
 
 .PARAMETER CsvPath
     Optional CSV export path. "{date}" is replaced with yyyyMMdd-HHmm, "{env}" with the environment
@@ -78,7 +83,7 @@
     .\Get-EsxiTimeReport.ps1 -VCenter vc01.corp.local | Format-Table
 
 .EXAMPLE
-    # Against an NTP server instead of the local clock, only the hosts with a warning
+    # Every host against one NTP server (default: each host's own), only the hosts with a warning
     .\Get-EsxiTimeReport.ps1 -VCenter vc01.corp.local -ReferenceNtpServer ntp1.corp.local | Where-Object Status -ne 'OK'
 
 .EXAMPLE
@@ -99,7 +104,8 @@
     Version history
     2.0  2026-11-24  Rewrite for this repository: environment config, -UseSddcCredentials, Cluster column,
                      -Cluster / -VMHost filters, signed offset with -MaxOffsetSeconds and Status,
-                     -ReferenceNtpServer (SNTP) instead of the retired earthtools.org web service,
+                     reference = the host's own NTP server, -ReferenceNtpServer or -UseLocalClock (SNTP)
+                     instead of the retired earthtools.org web service,
                      ntpd policy, disconnects only its own vCenter session.
     1.0  2025-10-13  First version (Report-HostTime2NTP.ps1).
 
@@ -113,6 +119,7 @@ param(
     [string[]]$VMHost,
     [double]$MaxOffsetSeconds = 1,
     [string]$ReferenceNtpServer,
+    [switch]$UseLocalClock,
     [string]$CsvPath,
     [pscredential]$Credential,
     [string]$Environment,
@@ -130,7 +137,7 @@ $isCore = $PSVersionTable.PSEdition -eq 'Core'
 
 # Settings this script reads from the environment config (key = parameter name).
 $ConfigSection = 'HostTimeReport'
-$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; VMHost = 'list'; MaxOffsetSeconds = 'string'; ReferenceNtpServer = 'string'; CsvPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
+$ConfigSettings = @{ VCenter = 'first'; Cluster = 'list'; VMHost = 'list'; MaxOffsetSeconds = 'string'; ReferenceNtpServer = 'string'; UseLocalClock = 'switch'; CsvPath = 'string'; SddcManager = 'first'; UseSddcCredentials = 'switch'; SkipCertificateCheck = 'switch' }
 $ConfigCredentials = [ordered]@{ Vc = 'Credential'; Sddc = 'SddcCredential' }
 
 #region Environment config file (shared: identical in every script, checked by CI) -------------
@@ -277,21 +284,32 @@ function Get-NtpClockOffset {
     [TimeSpan]::FromTicks(((($t2 - $t1).Ticks) + (($t3 - $t4).Ticks)) / 2)
 }
 
-$clockOffset = [TimeSpan]::Zero
-$reference = 'Local clock'
-if ($ReferenceNtpServer) {
-    try {
-        $clockOffset = Get-NtpClockOffset -Server $ReferenceNtpServer
-        $reference = "NTP $ReferenceNtpServer"
-        Write-Host ("Local clock vs {0}: {1:N3} s (corrected in the report)" -f $ReferenceNtpServer, (-$clockOffset.TotalSeconds)) -ForegroundColor Cyan
+# Offsets of the local clock against NTP servers, asked once per server. $null = server did not answer.
+$ntpOffsets = @{}
+function Resolve-Reference {
+    # Returns the reference for one host: @{ Name; Offset }. Order: -UseLocalClock, -ReferenceNtpServer,
+    # the host's own NTP servers (first one that answers), the local clock.
+    param([string[]]$HostNtpServers)
+    if ($UseLocalClock) { return @{ Name = 'Local clock'; Offset = [TimeSpan]::Zero } }
+    $candidates = if ($ReferenceNtpServer) { @($ReferenceNtpServer) } else { @($HostNtpServers) }
+    foreach ($server in $candidates) {
+        if (-not $ntpOffsets.ContainsKey($server)) {
+            try {
+                $ntpOffsets[$server] = Get-NtpClockOffset -Server $server
+                Write-Host ("Local clock vs NTP {0}: {1:N3} s (corrected in the report)" -f $server, (-$ntpOffsets[$server].TotalSeconds)) -ForegroundColor Cyan
+            }
+            catch {
+                $ntpOffsets[$server] = $null
+                Write-Warning "NTP server $server did not answer from this machine ($($_.Exception.Message))."
+            }
+        }
+        if ($null -ne $ntpOffsets[$server]) { return @{ Name = "NTP $server"; Offset = $ntpOffsets[$server] } }
     }
-    catch {
-        Write-Warning "NTP server $ReferenceNtpServer did not answer ($($_.Exception.Message)). Using the local clock as reference."
-    }
+    @{ Name = 'Local clock'; Offset = [TimeSpan]::Zero }
 }
-else {
-    Write-Host 'Reference: the local clock of this machine (use -ReferenceNtpServer to check it against NTP).' -ForegroundColor Cyan
-}
+if ($UseLocalClock) { Write-Host 'Reference: the local clock of this machine.' -ForegroundColor Cyan }
+elseif ($ReferenceNtpServer) { Write-Host "Reference: NTP server $ReferenceNtpServer for every host." -ForegroundColor Cyan }
+else { Write-Host 'Reference: per host, the first of its own NTP servers that answers from this machine (else the local clock).' -ForegroundColor Cyan }
 #endregion
 
 $vi = $null
@@ -307,7 +325,7 @@ try {
     foreach ($esx in @($esxHosts | Sort-Object { "$($_.Parent)" }, Name)) {
         $row = [ordered]@{
             VMHost = $esx.Name; Cluster = "$($esx.Parent)"; VMHostTimeUtc = $null; ReferenceTimeUtc = $null; OffsetSeconds = $null
-            Reference = $reference; TimeProtocol = $null; NtpServers = $null; NtpServiceRunning = $null; NtpServicePolicy = $null
+            Reference = $null; TimeProtocol = $null; NtpServers = $null; NtpServiceRunning = $null; NtpServicePolicy = $null
             Status = 'OK'; Message = ''
         }
         if ("$($esx.ConnectionState)" -notin 'Connected', 'Maintenance') {
@@ -318,25 +336,28 @@ try {
             $dateTimeSystem = Get-View -Server $vi -Id $esx.ExtensionData.ConfigManager.DateTimeSystem -Property dateTimeInfo
             $serviceSystem = Get-View -Server $vi -Id $esx.ExtensionData.ConfigManager.ServiceSystem -Property serviceInfo
 
-            # Local time halfway the call, so the round trip to vCenter and the host is not counted as drift.
-            $before = [DateTime]::UtcNow
-            $hostTime = $dateTimeSystem.QueryDateTime()
-            # The API returns UTC; only convert when PowerCLI hands it over as local time.
-            $hostTime = if ($hostTime.Kind -eq [DateTimeKind]::Local) { $hostTime.ToUniversalTime() } else { [DateTime]::SpecifyKind($hostTime, [DateTimeKind]::Utc) }
-            $after = [DateTime]::UtcNow
-            $referenceTime = $before.AddTicks(($after - $before).Ticks / 2) + $clockOffset
-
             $info = $dateTimeSystem.DateTimeInfo
             # vSphere 7.0 U3 and later report "ntp" or "ptp"; older hosts leave it empty (= NTP).
             $protocol = if ($info.PSObject.Properties['Protocol'] -and $info.Protocol) { "$($info.Protocol)" } else { 'ntp' }
             $serviceKey = if ($protocol -eq 'ptp') { 'ptpd' } else { 'ntpd' }
             $service = $serviceSystem.ServiceInfo.Service | Where-Object { $_.Key -eq $serviceKey } | Select-Object -First 1
             $ntpServers = @($info.NtpConfig.Server | Where-Object { $_ })
+            $ref = Resolve-Reference -HostNtpServers $ntpServers
+
+            # Local time halfway the call, so the round trip to vCenter and the host is not counted as drift.
+            $before = [DateTime]::UtcNow
+            $hostTime = $dateTimeSystem.QueryDateTime()
+            # The API returns UTC; only convert when PowerCLI hands it over as local time.
+            $hostTime = if ($hostTime.Kind -eq [DateTimeKind]::Local) { $hostTime.ToUniversalTime() } else { [DateTime]::SpecifyKind($hostTime, [DateTimeKind]::Utc) }
+            $after = [DateTime]::UtcNow
+            $referenceTime = $before.AddTicks(($after - $before).Ticks / 2) + $ref.Offset
+
 
             $offset = [Math]::Round(($hostTime - $referenceTime).TotalSeconds, 3)
             $row.VMHostTimeUtc = $hostTime.ToString('yyyy-MM-dd HH:mm:ss.fff')
             $row.ReferenceTimeUtc = $referenceTime.ToString('yyyy-MM-dd HH:mm:ss.fff')
             $row.OffsetSeconds = $offset
+            $row.Reference = $ref.Name
             $row.TimeProtocol = $protocol.ToUpper()
             $row.NtpServers = $ntpServers -join ', '
             $row.NtpServiceRunning = [bool]$service.Running
@@ -369,8 +390,8 @@ $measured = @($report | Where-Object { $null -ne $_.OffsetSeconds })
 if ($measured) {
     $stats = $measured | Measure-Object -Property OffsetSeconds -Minimum -Maximum -Average
     $worst = $measured | Sort-Object { [Math]::Abs($_.OffsetSeconds) } -Descending | Select-Object -First 1
-    Write-Host ("{0} host(s) measured against {1}. Offset min {2:N3} s, max {3:N3} s, average {4:N3} s. Largest: {5} ({6:N3} s)." -f `
-            $measured.Count, $reference, $stats.Minimum, $stats.Maximum, $stats.Average, $worst.VMHost, $worst.OffsetSeconds) -ForegroundColor Cyan
+    Write-Host ("{0} host(s) measured ({1}). Offset min {2:N3} s, max {3:N3} s, average {4:N3} s. Largest: {5} ({6:N3} s)." -f `
+            $measured.Count, (@($measured.Reference | Sort-Object -Unique) -join ', '), $stats.Minimum, $stats.Maximum, $stats.Average, $worst.VMHost, $worst.OffsetSeconds) -ForegroundColor Cyan
 }
 $notOk = @($report | Where-Object Status -ne 'OK')
 if ($notOk) { Write-Warning "$($notOk.Count) host(s) need attention (Status Warning, Failed or Skipped)." }

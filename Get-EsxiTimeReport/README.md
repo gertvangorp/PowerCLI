@@ -14,7 +14,14 @@ The script only reads. It changes nothing.
 
 ## Reference time
 
-By default the host time is compared with the UTC clock of the machine that runs the script. If that clock is off, every host looks off by the same amount. Use `-ReferenceNtpServer` to measure the local clock once against an NTP server (SNTP over UDP 123) and correct for it; use one of the NTP servers your hosts use. If the server does not answer, the script warns and falls back to the local clock.
+The script picks the reference per host, in this order:
+
+1. `-UseLocalClock`: the UTC clock of the machine that runs the script.
+2. `-ReferenceNtpServer <server>`: that one NTP server for every host.
+3. Default: the **host's own NTP servers**, the first one in its config that answers from this machine. So each host is checked against the server it is supposed to follow.
+4. If none answers (UDP 123 blocked, or a PTP host without NTP servers), the local clock, with a warning.
+
+For an NTP reference the script asks the server once (SNTP over UDP 123) how far the local clock is off and corrects for that, so a wrong clock on your own machine does not show up as drift. The `Reference` column shows what each host was compared with (`NTP <server>` or `Local clock`).
 
 The local time is taken halfway the host query, so the round trip to vCenter does not count as drift. Expect a few milliseconds of noise; offsets above a second are real.
 
@@ -22,7 +29,7 @@ The local time is taken halfway the host query, so the round trip to vCenter doe
 
 - PowerShell 7 or Windows PowerShell 5.1
 - `Install-Module VCF.PowerCLI -Scope CurrentUser` (VMware.PowerCLI also works)
-- Network access to vCenter, and UDP 123 to the NTP server for `-ReferenceNtpServer`
+- Network access to vCenter, and UDP 123 to the NTP servers (else the local clock is the reference)
 - A vCenter account with read access to the hosts
 
 ## Parameters
@@ -33,7 +40,8 @@ The local time is taken halfway the host query, so the round trip to vCenter doe
 | `-Cluster` | No | One or more cluster names. Leave out for all hosts in vCenter |
 | `-VMHost` | No | One or more host names as known in vCenter. Wildcards work (`esx0*`). With `-Cluster`: only those hosts in those clusters |
 | `-MaxOffsetSeconds` | No | Offset (absolute) above which a host gets `Warning`. Default `1` |
-| `-ReferenceNtpServer` | No | Compare against this NTP server instead of the local clock |
+| `-ReferenceNtpServer` | No | Compare every host with this NTP server instead of the host's own NTP servers |
+| `-UseLocalClock` | No | Compare with the clock of this machine instead of NTP |
 | `-CsvPath` | No | Also export to CSV (separator from your regional settings, like Excel). `{date}` becomes `yyyyMMdd-HHmm`, `{env}` the environment name |
 | `-Credential` | No | vCenter account. Config: `VcUser` / `VcCredentialFile` |
 | `-Environment` | No | Environment config name: reads `config\<name>.config.json` |
@@ -48,7 +56,7 @@ The local time is taken halfway the host query, so the round trip to vCenter doe
 ```powershell
 .\Get-EsxiTimeReport.ps1 -VCenter vc01.corp.local | Format-Table
 
-# One cluster, against an NTP server, only the hosts that need attention
+# One cluster, all hosts against one NTP server, only the hosts that need attention
 .\Get-EsxiTimeReport.ps1 -VCenter vc01.corp.local -Cluster CL-MGMT-01 -ReferenceNtpServer ntp1.corp.local |
     Where-Object Status -ne 'OK' | Format-Table VMHost, OffsetSeconds, Message
 
@@ -74,7 +82,8 @@ This script uses the shared **environment config**: one JSON file per environmen
   "Cluster": [],
   "VMHost": [],
   "MaxOffsetSeconds": 1,
-  "ReferenceNtpServer": "0.be.pool.ntp.org",
+  "ReferenceNtpServer": "",
+  "UseLocalClock": false,
   "CsvPath": "%USERPROFILE%\\Reports\\{env}-esxi-time-{date}.csv"
 }
 ```
@@ -95,4 +104,4 @@ The other columns are `VMHostTimeUtc`, `ReferenceTimeUtc` (both `yyyy-MM-dd HH:m
 
 ## History
 
-Version 2.0 is a rewrite of `Report-HostTime2NTP.ps1` (1.0, based on Get-VMHostTimeReport by Grzegorz Kulikowski). Changes: environment config and vault credentials, a Cluster column and `-Cluster` / `-VMHost` filters, a signed offset with a threshold and Status, `-ReferenceNtpServer` instead of the earthtools.org web service (no longer online), the ntpd policy, and it disconnects only its own vCenter session.
+Version 2.0 is a rewrite of `Report-HostTime2NTP.ps1` (1.0, based on Get-VMHostTimeReport by Grzegorz Kulikowski). Changes: environment config and vault credentials, a Cluster column and `-Cluster` / `-VMHost` filters, a signed offset with a threshold and Status, the host's own NTP server (or `-ReferenceNtpServer` / `-UseLocalClock`) as reference instead of the earthtools.org web service (no longer online), the ntpd policy, and it disconnects only its own vCenter session.
